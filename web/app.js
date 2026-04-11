@@ -21,10 +21,13 @@ function setStatus(text) {
     document.getElementById("status").textContent = text;
 }
 
+let dumpRunning = false;
+
 function updateButtons() {
     const connected = usb.isConnected;
     document.getElementById("connectBtn").textContent = connected ? "Disconnect" : "Connect USB Adapter";
-    document.getElementById("startBtn").disabled = !connected || !romData;
+    document.getElementById("startBtn").disabled = !connected || !romData || dumpRunning;
+    document.getElementById("dumpOnlyBtn").disabled = !connected || dumpRunning;
     document.getElementById("cancelBtn").disabled = !dumpReceiver;
 }
 
@@ -40,11 +43,9 @@ async function loadMultibootROM() {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         romData = new Uint8Array(await resp.arrayBuffer());
         log(`Multiboot ROM loaded: ${formatSize(romData.length)}`);
-        document.getElementById("romStatus").textContent = `ROM loaded (${formatSize(romData.length)})`;
         updateButtons();
     } catch (e) {
         log("Failed to load multiboot ROM. Make sure gba-switch-to-gbc_mb.gba is in the web folder.", "error");
-        document.getElementById("romStatus").textContent = "ROM not found";
     }
 }
 
@@ -122,13 +123,64 @@ async function startDump() {
         await usb.setTimingConfig(50, 1);
         await delay(100);
 
-        // Phase 3: Receive dump
-        setStatus("Receiving dump...");
+        await runDumpLoop();
+
+    } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        setStatus("Error");
+        dumpReceiver = null;
+    }
+    dumpRunning = false;
+    updateButtons();
+}
+
+async function startDumpOnly() {
+    if (!usb.isConnected) return;
+
+    dumpRunning = true;
+    updateButtons();
+
+    const progressBar = document.getElementById("progressFill");
+    const progressText = document.getElementById("progressText");
+    progressBar.style.width = "0%";
+
+    try {
+        log("--- Dump Only (multiboot already sent) ---");
+
+        if (usb.isNewFirmware) {
+            await usb.setMode(MODE.GB_LINK);
+            await delay(100);
+        }
+        await usb.setTimingConfig(50, 1);
+        await delay(100);
+
+        await runDumpLoop();
+
+    } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        setStatus("Error");
+        dumpReceiver = null;
+    }
+    dumpRunning = false;
+    updateButtons();
+}
+
+async function runDumpLoop() {
+    const progressBar = document.getElementById("progressFill");
+    const progressText = document.getElementById("progressText");
+    let dumpCount = 0;
+
+    while (usb.isConnected) {
+        setStatus("Waiting for dump...");
+        progressBar.style.width = "0%";
+        progressText.textContent = dumpCount === 0 ? "Waiting for first dump..." : "Ready for next dump — swap cartridge and press a button on the GBA";
+
         dumpReceiver = new DumpReceiver(usb, log);
         updateButtons();
 
         const startTime = Date.now();
         const result = await dumpReceiver.receiveDump((done, total, bank, banks) => {
+            setStatus("Receiving dump...");
             const pct = Math.floor((done / total) * 100);
             progressBar.style.width = `${pct}%`;
             const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -143,20 +195,16 @@ async function startDump() {
         updateButtons();
 
         if (result) {
-            setStatus("Dump complete!");
+            dumpCount++;
+            log(`Dump #${dumpCount} complete!`, "success");
             progressBar.style.width = "100%";
             progressText.textContent = "Complete!";
             offerDownload(result.data, result.type);
         } else {
             setStatus("Dump cancelled or failed");
+            break;
         }
-
-    } catch (e) {
-        log(`Error: ${e.message}`, "error");
-        setStatus("Error");
-        dumpReceiver = null;
     }
-    updateButtons();
 }
 
 function offerDownload(data, type) {
@@ -166,11 +214,15 @@ function offerDownload(data, type) {
     const blob = new Blob([data], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
 
-    const link = document.getElementById("downloadLink");
+    const section = document.getElementById("downloadSection");
+    section.style.display = "block";
+
+    const link = document.createElement("a");
+    link.className = "btn btn-success";
     link.href = url;
     link.download = filename;
-    link.textContent = `Download ${filename} (${formatSize(data.length)})`;
-    document.getElementById("downloadSection").style.display = "block";
+    link.textContent = `${filename} (${formatSize(data.length)})`;
+    section.appendChild(link);
 
     log(`Ready to download: ${filename} (${formatSize(data.length)})`, "success");
 }
@@ -200,6 +252,7 @@ function formatTime(seconds) {
 document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("connectBtn").addEventListener("click", toggleConnect);
     document.getElementById("startBtn").addEventListener("click", startDump);
+    document.getElementById("dumpOnlyBtn").addEventListener("click", startDumpOnly);
     document.getElementById("cancelBtn").addEventListener("click", cancelDump);
 
     if (!navigator.usb) {

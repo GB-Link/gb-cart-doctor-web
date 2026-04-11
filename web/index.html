@@ -21,7 +21,6 @@
 
         <div class="section">
             <h2>1. Connect</h2>
-            <p id="romStatus" class="rom-status">Loading ROM...</p>
             <button id="connectBtn" class="btn">Connect USB Adapter</button>
         </div>
 
@@ -35,8 +34,10 @@
             </ul>
             <div class="btn-row">
                 <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot & Dump</button>
+                <button id="dumpOnlyBtn" class="btn btn-primary" disabled>Dump Only</button>
                 <button id="cancelBtn" class="btn btn-danger" disabled>Cancel</button>
             </div>
+            <p class="hint">Use "Dump Only" if the GBA is already running the dumper ROM.</p>
         </div>
 
         <div class="section">
@@ -50,7 +51,6 @@
 
         <div id="downloadSection" class="section" style="display:none">
             <h2>3. Download</h2>
-            <a id="downloadLink" class="btn btn-success" href="#" download>Download</a>
         </div>
 
         <div class="section">
