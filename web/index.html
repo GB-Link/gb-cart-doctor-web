@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GBA Cart Dumper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="card">
+        <h1>GBA Cart Dumper</h1>
+        <p class="subtitle">Dump GB/GBC cartridges via GBA multiboot</p>
+
+        <div id="browserWarning" class="warning" style="display:none">
+            WebUSB is not supported in this browser. Use Chrome or Edge.
+        </div>
+
+        <div class="notice">
+            Dumping can take a long time (up to 1 hour per MB for ROMs). Keep this tab active and in the foreground — browser tab throttling can stall USB transfers.
+        </div>
+
+        <div class="section">
+            <h2>1. Connect</h2>
+            <p id="romStatus" class="rom-status">Loading ROM...</p>
+            <button id="connectBtn" class="btn">Connect USB Adapter</button>
+        </div>
+
+        <div class="section">
+            <h2>2. Dump</h2>
+            <p class="hint">Insert a GB/GBC cartridge into the GBA, connect the link cable, and turn on the GBA. After multiboot, the GBA will switch to GBC mode and verify the cartridge. Then press:</p>
+            <ul class="hint-list">
+                <li><b>A</b> — Dump ROM only</li>
+                <li><b>B</b> — Dump SRAM (save) only</li>
+                <li><b>START</b> — Dump both ROM and SRAM</li>
+            </ul>
+            <div class="btn-row">
+                <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot & Dump</button>
+                <button id="cancelBtn" class="btn btn-danger" disabled>Cancel</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Progress</h2>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <p id="progressText" class="progress-text">Idle</p>
+            <p id="status" class="status">Disconnected</p>
+        </div>
+
+        <div id="downloadSection" class="section" style="display:none">
+            <h2>3. Download</h2>
+            <a id="downloadLink" class="btn btn-success" href="#" download>Download</a>
+        </div>
+
+        <div class="section">
+            <h2>Log</h2>
+            <div id="log" class="log"></div>
+        </div>
+    </div>
+
+    <script src="usb_connection.js"></script>
+    <script src="multiboot.js"></script>
+    <script src="dump_receiver.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
