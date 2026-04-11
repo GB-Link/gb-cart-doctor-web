@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT
 //
-// Copyright (c) 2014, 2020 Antonio Niño Díaz (AntonioND)
+// Copyright (c) 2014, 2020 Antonio Niï¿½o Dï¿½az (AntonioND)
 
 #include <stdio.h>
+#include <string.h>
 
 #include <gba.h>
 
 #include "payload_array.h"
 #define VRAM_SIZE 0x1000
-
-#define REG_VCOUNT *(vu16*)0x04000006
 #define ALWAYS_INLINE __attribute__((always_inline)) static inline
 
 extern void RAM_stub(void);
@@ -107,7 +106,7 @@ IWRAM_CODE void delayed_switch2gbc(void)
     REG_IME = 0;
 
     // Write payload to IWRAM
-    uint8_t* iwram_8 = (uint32_t*)0x03000000;
+    uint8_t* iwram_8 = (uint8_t*)0x03000000;
     memset(iwram_8, 0, VRAM_SIZE*4);
     for (int i = 0; i < PAYLOAD_SIZE; i++)
     {

@@ -1,3 +1,9 @@
 /build/
 *.elf
 *.sav
+*.o
+*.gbc
+source/gbc_payload.h
+source/gbc_payload_fast.h
+source/payload_array.h
+gba-dump-gb_mb.gba

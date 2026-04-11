@@ -117,7 +117,8 @@ async function startDump() {
         // Wait for GBA to boot the ROM and switch to GBC mode
         await delay(2000);
 
-        // Reconfigure timing: 1 byte per SPI exchange (already in GB Link mode from multiboot).
+        // Reconfigure timing for fast protocol: 1 byte per SPI exchange, 300µs inter-byte
+        // delay (GBC needs ~256µs to prepare each byte).
         // Do NOT drain stale USB data — on new firmware, timed-out transferIn requests
         // leave stale pending reads that silently consume real SPI responses.
         await usb.setTimingConfig(50, 1);
@@ -175,7 +176,7 @@ async function runDumpLoop() {
         progressBar.style.width = "0%";
         progressText.textContent = dumpCount === 0 ? "Waiting for first dump..." : "Ready for next dump — swap cartridge and press a button on the GBA";
 
-        dumpReceiver = new DumpReceiver(usb, log);
+        dumpReceiver = new FastDumpReceiver(usb, log);
         updateButtons();
 
         const startTime = Date.now();

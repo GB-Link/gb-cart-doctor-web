@@ -14,6 +14,7 @@
 #define E_ROTATE_SCREEN             (1 << 4)
 
 IWRAM_CODE void prepare_registers(void);
+IWRAM_CODE void print_switching_info(void);
 IWRAM_CODE void delayed_switch2gbc(void);
 
 #endif // SWITCH2GBC__
