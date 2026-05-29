@@ -3,9 +3,14 @@
  * Sends multiboot ROM to GBA, then receives cart dump via GBC link protocol.
  */
 
-const usb = new UsbConnection();
+let usb = new UsbConnection();
 let dumpReceiver = null;
 let romData = null;
+
+// Prefer WebUSB; fall back to WebSerial (Firefox 151+, or Chromium with WebUSB disabled).
+const hasUsb = ('usb' in navigator);
+const hasSerial = ('serial' in navigator);
+const transport = hasUsb ? 'usb' : (hasSerial ? 'serial' : null);
 
 function log(message, type = "info") {
     const logEl = document.getElementById("log");
@@ -25,7 +30,10 @@ let dumpRunning = false;
 
 function updateButtons() {
     const connected = usb.isConnected;
-    document.getElementById("connectBtn").textContent = connected ? "Disconnect" : "Connect USB Adapter";
+    const connectBtn = document.getElementById("connectBtn");
+    const connectLabel = transport === 'serial' ? "Connect Serial" : "Connect USB";
+    connectBtn.textContent = connected ? "Disconnect" : connectLabel;
+    connectBtn.disabled = !transport;
     document.getElementById("startBtn").disabled = !connected || !romData || dumpRunning;
     document.getElementById("dumpOnlyBtn").disabled = !connected || dumpRunning;
     document.getElementById("cancelBtn").disabled = !dumpReceiver;
@@ -49,7 +57,7 @@ async function loadMultibootROM() {
     }
 }
 
-async function toggleConnect() {
+async function toggleConnect(kind = 'usb') {
     if (usb.isConnected) {
         if (dumpReceiver) dumpReceiver.cancel();
         await usb.disconnect();
@@ -57,9 +65,12 @@ async function toggleConnect() {
         setStatus("Disconnected");
     } else {
         try {
+            usb = (kind === 'serial') ? new SerialConnection() : new UsbConnection();
             setStatus("Connecting...");
             await usb.connect();
-            const fwType = usb.isNewFirmware ? "GBLink Unified" : "Reconfigurable";
+            const fwType = (kind === 'serial')
+                ? "GBLink Unified (WebSerial)"
+                : (usb.isNewFirmware ? "GBLink Unified" : "Reconfigurable");
             log(`Connected! Firmware: ${fwType}`, "success");
             setStatus("Connected");
         } catch (e) {
@@ -251,12 +262,12 @@ function formatTime(seconds) {
 // SECTION_SIZE defined in dump_receiver.js
 
 document.addEventListener("DOMContentLoaded", () => {
-    document.getElementById("connectBtn").addEventListener("click", toggleConnect);
+    document.getElementById("connectBtn").addEventListener("click", () => toggleConnect(transport));
     document.getElementById("startBtn").addEventListener("click", startDump);
     document.getElementById("dumpOnlyBtn").addEventListener("click", startDumpOnly);
     document.getElementById("cancelBtn").addEventListener("click", cancelDump);
 
-    if (!navigator.usb) {
+    if (!transport) {
         document.getElementById("browserWarning").style.display = "block";
     }
 

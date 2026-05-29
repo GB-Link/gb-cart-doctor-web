@@ -12,7 +12,7 @@
         <p class="subtitle">Dump GB/GBC cartridges via GBA multiboot</p>
 
         <div id="browserWarning" class="warning" style="display:none">
-            WebUSB is not supported in this browser. Use Chrome or Edge.
+            Neither WebUSB nor WebSerial supported in this browser. Use Chrome/Edge or Firefox 151+.
         </div>
 
         <div class="notice">
@@ -21,7 +21,7 @@
 
         <div class="section">
             <h2>1. Connect</h2>
-            <button id="connectBtn" class="btn">Connect USB Adapter</button>
+            <button id="connectBtn" class="btn">Connect USB</button>
         </div>
 
         <div class="section">
@@ -57,9 +57,17 @@
             <h2>Log</h2>
             <div id="log" class="log"></div>
         </div>
+        <footer class="app-footer">
+            <p>Version: 1.1.0</p>
+            <p>
+                Requires <a href="https://github.com/starlarkus/GBLink-Firmware" target="_blank">USB
+                    Firmware</a> - <a href="https://github.com/starlarkus/gba-dump-gb" target="_blank">Source</a>
+            </p>
+        </footer>
     </div>
 
     <script src="usb_connection.js"></script>
+    <script src="serial_connection.js"></script>
     <script src="multiboot.js"></script>
     <script src="dump_receiver.js"></script>
     <script src="dump_receiver_fast.js"></script>

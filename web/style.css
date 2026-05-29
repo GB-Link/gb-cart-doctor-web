@@ -150,3 +150,20 @@ h1 {
     margin-bottom: 1rem;
     font-size: 0.85rem;
 }
+
+.app-footer {
+    text-align: center;
+    margin-top: 30px;
+    padding-bottom: 20px;
+    font-size: 14px;
+    opacity: 0.8;
+}
+
+.app-footer a {
+    color: #6a9fd8;
+    text-decoration: none;
+}
+
+.app-footer a:hover {
+    text-decoration: underline;
+}
