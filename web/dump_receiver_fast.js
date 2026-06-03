@@ -82,14 +82,26 @@ class FastDumpReceiver {
 
                 // Verify checksum
                 const expected = (FAST_MAGIC ^ type ^ sizeIdx) & 0xFF;
-                if (checksum === expected) {
-                    // Send ack
-                    await this.spiExchange(FAST_OK);
-                    return { type, sizeIdx };
-                } else {
+                if (checksum !== expected) {
                     this.log(`Header checksum failed: got 0x${checksum.toString(16)}, expected 0x${expected.toString(16)}`, "error");
                     await this.spiExchange(FAST_FAIL);
+                    continue;
                 }
+                // Only ACK transfers we actually handle. A type-3 (restore)
+                // header means the user pressed SELECT — NAK it so the GBC stays
+                // on its menu instead of being pushed into restore-receive mode
+                // (which would hang waiting for 32 KB the dump loop never sends).
+                if (type !== FAST_ROM_TRANSFER && type !== FAST_SRAM_TRANSFER) {
+                    // A restore header (type 3) during a dump with no SELECT
+                    // pressed means the GBA is running an OLD payload. Reloading
+                    // the page is not enough — re-run "Send Multiboot & Dump" to
+                    // push the current payload to the GBA, then try again.
+                    this.log(`GBA is running an outdated payload (got restore header type ${type} during a dump). Click "Send Multiboot & Dump" to update the GBA, then retry.`, "error");
+                    await this.spiExchange(FAST_FAIL);
+                    continue;
+                }
+                await this.spiExchange(FAST_OK);
+                return { type, sizeIdx };
             }
             // Not magic yet — GBC still in init, keep polling
         }

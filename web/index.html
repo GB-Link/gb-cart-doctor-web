@@ -41,6 +41,22 @@
         </div>
 
         <div class="section">
+            <h2>3. Restore a save (write to cart)</h2>
+            <p class="hint">
+                <b>This overwrites the save on the cartridge.</b> Make sure the
+                GBA is already running the dumper ROM (use "Send Multiboot &amp;
+                Dump" first if not), then load a <code>.sav</code> file below,
+                click "Restore Save", and when prompted press <b>SELECT</b> on
+                the GBA. The file's size must exactly match the cart's SRAM, or
+                the restore is refused.
+            </p>
+            <input type="file" id="restoreFile" accept=".sav,.srm,application/octet-stream">
+            <div class="btn-row">
+                <button id="restoreBtn" class="btn btn-primary" disabled>Restore Save</button>
+            </div>
+        </div>
+
+        <div class="section">
             <h2>Progress</h2>
             <div class="progress-bar">
                 <div id="progressFill" class="progress-fill"></div>
@@ -50,7 +66,7 @@
         </div>
 
         <div id="downloadSection" class="section" style="display:none">
-            <h2>3. Download</h2>
+            <h2>4. Download</h2>
         </div>
 
         <div class="section">
@@ -71,6 +87,7 @@
     <script src="multiboot.js"></script>
     <script src="dump_receiver.js"></script>
     <script src="dump_receiver_fast.js"></script>
+    <script src="restore_sender_fast.js"></script>
     <script src="app.js"></script>
     <script src="launcher-return.js"></script>
 </body>

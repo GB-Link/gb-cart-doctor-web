@@ -2,6 +2,7 @@
 
 rROM_TRANSFER EQU $1
 rSRAM_TRANSFER EQU $2
+rRESTORE_TRANSFER EQU $3                ; SRAM write-back (master -> cart)
 rSLAVE_MODE EQU $82
 rOK  EQU $1
 rFAIL EQU $0
@@ -11,6 +12,15 @@ rROM_BANK_SIZE EQU $40
 rSRAM_SUB_BANK_SIZE EQU $8
 rSRAM_MBC2_BANK_SIZE EQU $2
 CART_RUMBLE_ENABLE EQU $8
+
+; Transfer-direction flag: 0 = dump (cart -> master), 1 = restore (master ->
+; cart). Stored at $FF83, which is INSIDE the HRAM block that copy_to_hram fills
+; with menu code (hram_code byte 3 = $40). So it MUST only be written AFTER the
+; menu has handed off to a transfer (in prepare_ROM_dumper / prepare_SRAM_restore)
+; — never before the copy, or the copy overwrites it and dumps read 0x40 (nonzero)
+; and wrongly take the restore branch. $FF80-$FF82 are the existing post-menu
+; transfer scratch; $FF83 just extends that window.
+rRESTORE_FLAG EQU $FF83
 
 ; Fast protocol marker — master sends this to signal fast mode
 rFAST_MAGIC EQU $F5
@@ -99,6 +109,12 @@ start:
 
 .prepare_ROM_dumper
     ld  a,b
+    and a,PADF_SELECT                   ; SELECT = restore a save to the cart
+    jp  nz,_VRAM+.prepare_SRAM_restore
+    xor a
+    ld  [rRESTORE_FLAG],a               ; dump mode — set AFTER the HRAM menu so
+                                        ; it survives (covers ROM, SRAM, and both)
+    ld  a,b
     and a,PADF_A|PADF_START
     jp  z,_VRAM+.prepare_SRAM_dumper
     push bc
@@ -181,8 +197,7 @@ start:
     jp  z,_VRAM+.SRAM_banks_transfer_end
 
 .send_start_sram
-    ld  a,[$0149]
-    ld  h,a                            ; h = SRAM size index
+    call _VRAM+.load_sram_size_index    ; h = SRAM size index ($0149, or 6 for MBC2)
 
     ; Send 4-byte header
     ld  a,rFAST_MAGIC
@@ -200,6 +215,42 @@ start:
     call _VRAM+.recv_raw_byte
     cp  a,rOK
     jr  nz,.send_start_sram
+    jp  _VRAM+.check_mbc1_sram          ; DUMP path ends here. Skip the restore
+                                        ; setup below — falling through would set
+                                        ; rRESTORE_FLAG=1 and send a second
+                                        ; (restore) header on top of the dump,
+                                        ; turning every SRAM dump into a
+                                        ; simultaneous dump+restore. .prepare_SRAM_restore
+                                        ; is entered ONLY via the SELECT branch
+                                        ; in .prepare_ROM_dumper.
+
+.prepare_SRAM_restore
+    ld  a,$1
+    ld  [rRESTORE_FLAG],a               ; switch section loop to receive-and-write
+    call _VRAM+.load_sram_size_index    ; h = SRAM size index ($0149, or 6 for MBC2)
+
+    ; Send 4-byte header announcing a restore (master verifies, then ACKs)
+    ld  a,rFAST_MAGIC
+    call _VRAM+.send_raw_byte          ; byte 0: magic
+    ld  a,rRESTORE_TRANSFER
+    call _VRAM+.send_raw_byte          ; byte 1: transfer type (restore)
+    ld  a,h
+    call _VRAM+.send_raw_byte          ; byte 2: size index
+    ld  a,rFAST_MAGIC
+    xor rRESTORE_TRANSFER
+    xor h
+    call _VRAM+.send_raw_byte          ; byte 3: checksum
+
+    ; Wait for ack. The master sends rFAIL to REFUSE the restore — e.g. the
+    ; loaded save's size does not match this cart's SRAM. On a refusal, return to
+    ; the menu instead of spinning resending the header (which would freeze the
+    ; cart, since the master has given up clocking us). The user can fix the file
+    ; and press SELECT again.
+    call _VRAM+.recv_raw_byte
+    cp  a,rOK
+    jp  nz,_VRAM+.copy_to_hram
+    ; Fall through into the shared MBC setup + bank loop. The section loop
+    ; reads rRESTORE_FLAG to receive-and-write instead of read-and-send.
 
 .check_mbc1_sram
     xor a
@@ -210,7 +261,11 @@ start:
     jr  c,.transfer_size_sram
     ld  a,CART_ROM_MBC1_RAM_BAT
     cp  a,b
-    jr  c,.check_mbc5_rumble_sram
+    jr  c,.check_mbc2_sram             ; types > MBC1+RAM+BAT: test MBC2 next.
+                                       ; (Was .check_mbc5_rumble_sram, which left
+                                       ; .check_mbc2_sram dead code so MBC2 SRAM
+                                       ; was silently skipped — pre-existing
+                                       ; upstream bug, same in gba-dump-gb-original.)
     ld  a,$1                           ; enable SRAM advanced banking mode
     ld  [$6000],a
     jr  .transfer_size_sram
@@ -264,6 +319,26 @@ start:
 .SRAM_banks_transfer_end
 
     jp  _VRAM+.copy_to_hram
+
+; ============================================================
+; SRAM size index for the transfer header. Normally [$0149], but MBC2 carts
+; report $00 there despite having 0x200 4-bit bytes — announce index 6, which
+; both the master's size tables and .check_mbc2_sram treat as the 512-byte MBC2
+; case, so the header matches what is actually transferred. Returns h; clobbers a.
+; ============================================================
+.load_sram_size_index
+    ld  a,[$0147]                      ; cart type
+    cp  a,CART_ROM_MBC2
+    jr  z,.lssi_mbc2
+    cp  a,CART_ROM_MBC2_BAT
+    jr  z,.lssi_mbc2
+    ld  a,[$0149]
+    ld  h,a
+    ret
+.lssi_mbc2
+    ld  a,$6
+    ld  h,a
+    ret
 
 ; ============================================================
 ; Bank transfer routines (unchanged logic, using fast SPI)
@@ -478,11 +553,14 @@ start:
 ; ============================================================
 .transfer_bank
 .transfer_section
-    ; Send 256 bytes, accumulate XOR checksum in c
+    ; 256 bytes + 1 XOR-checksum byte. Direction depends on rRESTORE_FLAG.
     xor a
     ld  c,a                            ; c = checksum = 0
     ; b counts 256 bytes (wraps from 0)
     ld  b,a
+    ld  a,[rRESTORE_FLAG]
+    and a,a
+    jr  nz,.restore_byte               ; restore: receive bytes and write them
 .transfer_byte
     ld  a,[de]
     xor c
@@ -501,7 +579,28 @@ start:
     call _VRAM+.recv_raw_byte
     cp  a,rOK
     jr  z,.section_ok
-    ; Retry: rewind de by 256
+    jr  .section_retry
+.restore_byte
+    call _VRAM+.recv_raw_byte          ; receive data byte from master
+    ld  [de],a                         ; write it into SRAM
+    xor c
+    ld  c,a                            ; checksum ^= byte
+    inc de
+    dec b
+    jr  nz,.restore_byte
+
+    ; Receive the master's checksum and verify our own
+    call _VRAM+.recv_raw_byte
+    cp  a,c
+    jr  nz,.restore_nak
+    ld  a,rOK
+    call _VRAM+.send_raw_byte          ; section accepted
+    jr  .section_ok
+.restore_nak
+    ld  a,rFAIL
+    call _VRAM+.send_raw_byte          ; ask master to resend this section
+.section_retry
+    ; Rewind de by 256 and redo the section (both sides rewind together)
     ld  a,d
     dec a
     ld  d,a
@@ -633,7 +732,7 @@ hram_code:
     call $FF80+.change_arrangements-hram_code
     ld  a,[rP1]                        ; read input
     cpl
-    and a,PADF_A|PADF_B|PADF_START
+    and a,PADF_A|PADF_B|PADF_START|PADF_SELECT
     ld  b,a
     jr  z,.main_loop
     call $FF80+.wait_VRAM_accessible-hram_code
