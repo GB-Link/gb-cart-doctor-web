@@ -1,5 +1,5 @@
 /**
- * GBA Cart Dumper — Web Interface
+ * GBLink Cart Doctor — Web Interface
  * Sends multiboot ROM to GBA, then receives cart dump via GBC link protocol.
  */
 
@@ -66,7 +66,7 @@ async function loadMultibootROM() {
         romData = new Uint8Array(await resp.arrayBuffer());
         // Log a short fingerprint so we can confirm which build is actually
         // being multibooted (the GBA runs the LAST-multibooted payload; reloads
-        // alone don't update it — only "Send Multiboot & Dump" does).
+        // alone don't update it — only "Send Multiboot" does).
         let h = 0;
         for (let i = 0; i < romData.length; i++) h = ((h * 31) + romData[i]) >>> 0;
         log(`Multiboot ROM loaded: ${formatSize(romData.length)} (build ${h.toString(16).padStart(8, '0')})`);
@@ -184,7 +184,7 @@ async function startDumpOnly() {
     progressBar.style.width = "0%";
 
     try {
-        log("--- Dump Only (multiboot already sent) ---");
+        log("--- Listening (homebrew already loaded, multiboot skipped) ---");
 
         if (usb.isNewFirmware) {
             await usb.setMode(MODE.GB_LINK);

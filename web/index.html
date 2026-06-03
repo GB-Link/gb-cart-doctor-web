@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GBA Cart Dumper</title>
+    <title>GBLink Cart Doctor</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="card">
-        <h1>GBA Cart Dumper</h1>
-        <p class="subtitle">Dump GB/GBC cartridges via GBA multiboot</p>
+        <h1>GBLink Cart Doctor</h1>
+        <p class="subtitle">Dump and restore GB/GBC cartridges via GBA multiboot</p>
 
         <div id="browserWarning" class="warning" style="display:none">
             Neither WebUSB nor WebSerial supported in this browser. Use Chrome/Edge or Firefox 151+.
@@ -26,26 +26,26 @@
 
         <div class="section">
             <h2>2. Dump</h2>
-            <p class="hint">Power on the GBA <b>without</b> a cartridge inserted, then click "Send Multiboot & Dump". After the multiboot completes and the GBA switches to GBC mode, insert your GB/GBC cartridge. Some cartridges have a voltage supervisor that resets the GBA on insertion — placing a small piece of kapton tape over pin 30 (/RESET, 3rd pin from the right) on the cartridge prevents this. Inserting slowly can also help. Once the cartridge is detected, press:</p>
+            <p class="hint">Power on the GBA <b>without</b> a cartridge inserted, then click "Send Multiboot". After the multiboot completes and the GBA switches to GBC mode, insert your GB/GBC cartridge. Some cartridges have a voltage supervisor that resets the GBA on insertion — placing a small piece of kapton tape over pin 30 (/RESET, 3rd pin from the right) on the cartridge prevents this. Inserting slowly can also help. Once the cartridge is detected, press:</p>
             <ul class="hint-list">
                 <li><b>A</b> — Dump ROM only</li>
                 <li><b>B</b> — Dump SRAM (save) only</li>
                 <li><b>START</b> — Dump both ROM and SRAM</li>
             </ul>
             <div class="btn-row">
-                <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot & Dump</button>
-                <button id="dumpOnlyBtn" class="btn btn-primary" disabled>Dump Only</button>
+                <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot</button>
+                <button id="dumpOnlyBtn" class="btn" disabled>Homebrew Already Loaded</button>
                 <button id="cancelBtn" class="btn btn-danger" disabled>Cancel</button>
             </div>
-            <p class="hint">Use "Dump Only" if the GBA is already running the dumper ROM.</p>
+            <p class="hint">"Send Multiboot" loads the dumper ROM onto the GBA, then waits — press a button on the GBA to dump, or use the Restore section below. Click "Homebrew Already Loaded" instead to skip the multiboot when the GBA is already running the dumper ROM (e.g. after a previous dump).</p>
         </div>
 
         <div class="section">
             <h2>3. Restore a save (write to cart)</h2>
             <p class="hint">
                 <b>This overwrites the save on the cartridge.</b> Make sure the
-                GBA is already running the dumper ROM (use "Send Multiboot &amp;
-                Dump" first if not), then load a <code>.sav</code> file below,
+                GBA is already running the dumper ROM (use "Send Multiboot"
+                first if not), then load a <code>.sav</code> file below,
                 click "Restore Save", and when prompted press <b>SELECT</b> on
                 the GBA. The file's size must exactly match the cart's SRAM, or
                 the restore is refused.
@@ -74,7 +74,7 @@
             <div id="log" class="log"></div>
         </div>
         <footer class="app-footer">
-            <p>Version: 1.1.0</p>
+            <p>Version: 1.2.0</p>
             <p>
                 Requires <a href="https://github.com/starlarkus/GBLink-Firmware" target="_blank">USB
                     Firmware</a> - <a href="https://github.com/starlarkus/gba-dump-gb" target="_blank">Source</a>

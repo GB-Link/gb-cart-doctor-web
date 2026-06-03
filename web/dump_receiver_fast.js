@@ -94,9 +94,9 @@ class FastDumpReceiver {
                 if (type !== FAST_ROM_TRANSFER && type !== FAST_SRAM_TRANSFER) {
                     // A restore header (type 3) during a dump with no SELECT
                     // pressed means the GBA is running an OLD payload. Reloading
-                    // the page is not enough — re-run "Send Multiboot & Dump" to
-                    // push the current payload to the GBA, then try again.
-                    this.log(`GBA is running an outdated payload (got restore header type ${type} during a dump). Click "Send Multiboot & Dump" to update the GBA, then retry.`, "error");
+                    // the page is not enough — re-run "Send Multiboot" to push
+                    // the current payload to the GBA, then try again.
+                    this.log(`GBA is running an outdated payload (got restore header type ${type} during a dump). Click "Send Multiboot" to update the GBA, then retry.`, "error");
                     await this.spiExchange(FAST_FAIL);
                     continue;
                 }
