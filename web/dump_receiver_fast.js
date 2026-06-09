@@ -71,10 +71,74 @@ class FastDumpReceiver {
 
         this.log("Waiting for dump to start...");
 
+        // Optional diagnostics. Set window.CART_DOCTOR_DEBUG = true (before
+        // starting a dump) to log, ~once a second, a histogram of the bytes the
+        // poll receives, per-poll latency, a 0xF5 bit-rotation check, and the
+        // first non-"rail" byte (anything other than 0x00/0xFF). This is how the
+        // 3.3V-vs-5V GBC-clocking bug was found: a healthy poll shows 0xF5 and
+        // header bytes, whereas ONLY 0x00/0xFF means the GBC slave never shifted
+        // in sync with the device's master clock. Off by default (no log spam).
+        const debug = (typeof window !== "undefined" && !!window.CART_DOCTOR_DEBUG);
+        const diag = {
+            hist: new Map(),          // byte value -> count since last report
+            polls: 0,
+            latencySum: 0,
+            latencyMax: 0,
+            lastReport: Date.now(),
+        };
+        const rotL = (b, n) => ((b << n) | (b >> (8 - n))) & 0xFF;
+        const now = () => (typeof performance !== "undefined" && performance.now)
+            ? performance.now() : Date.now();
+        let sawStructured = false;
+        const diagReport = () => {
+            if (diag.polls === 0) return;
+            const sorted = [...diag.hist.entries()].sort((a, b) => b[1] - a[1]);
+            const top = sorted.slice(0, 4)
+                .map(([v, c]) => `0x${v.toString(16).padStart(2, "0")}×${c}`)
+                .join(", ");
+            const avg = (diag.latencySum / diag.polls).toFixed(1);
+            this.log(`[diag] ${diag.polls} polls: ${top} | latency avg ${avg}ms max ${diag.latencyMax.toFixed(0)}ms`);
+            // Bit-framing check: is a dominant value just 0xF5 rotated?
+            for (const [v] of sorted.slice(0, 4)) {
+                if (v === FAST_MAGIC) continue;
+                for (let n = 1; n < 8; n++) {
+                    if (rotL(v, n) === FAST_MAGIC) {
+                        this.log(`[diag] 0x${v.toString(16).padStart(2, "0")} == 0xF5 left-rotated ${n} bit(s) -> likely bit-framing desync`, "error");
+                        break;
+                    }
+                }
+            }
+            diag.hist.clear();
+            diag.polls = 0;
+            diag.latencySum = 0;
+            diag.latencyMax = 0;
+            diag.lastReport = Date.now();
+        };
+
         while (!this.cancelled) {
-            const rx = await this.spiExchange(0x00);
+            let rx;
+            if (debug) {
+                const t0 = now();
+                rx = await this.spiExchange(0x00);
+                const dt = now() - t0;
+                diag.hist.set(rx, (diag.hist.get(rx) || 0) + 1);
+                diag.polls++;
+                diag.latencySum += dt;
+                if (dt > diag.latencyMax) diag.latencyMax = dt;
+                if (!sawStructured && rx !== 0x00 && rx !== 0xFF) {
+                    sawStructured = true;
+                    this.log(`[diag] first non-rail byte: 0x${rx.toString(16).padStart(2, "0")} — GBC is now shifting structured data`, "success");
+                }
+                if (Date.now() - diag.lastReport >= 1000) diagReport();
+            } else {
+                rx = await this.spiExchange(0x00);
+            }
 
             if (rx === FAST_MAGIC) {
+                if (debug) {
+                    diagReport(); // flush so the pre-magic signature logs in order
+                    this.log(`[diag] saw magic 0xF5 -> reading header`, "success");
+                }
                 // Got magic! Read remaining 3 bytes
                 const type = await this.spiExchange(0x00);
                 const sizeIdx = await this.spiExchange(0x00);
