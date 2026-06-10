@@ -123,6 +123,12 @@ async function startDump() {
             await usb.setMode(MODE.GB_LINK);
             await delay(100);
         }
+        // Multiboot uses the GBA-native serial, which expects a 3.3V link. A
+        // prior dump/restore leaves the device at 5V, so reset to 3.3V here so
+        // every multiboot runs at the validated voltage regardless of what ran
+        // before. (GBC-mode dump/restore re-switch to 5V in their own phases.)
+        await usb.setVoltage('3v3');
+        await delay(100);
         await usb.setTimingConfig(36, 4);
 
         if (!usb.isNewFirmware) {
@@ -157,6 +163,15 @@ async function startDump() {
             // requests leave stale pending reads that silently consume real SPI
             // responses.
             if (!dumpCancelRequested) {
+                // The GBC-mode transfer is clocked by the GB-Link as SPI master,
+                // and the GBA-in-GBC-mode serial slave will not sync to that clock
+                // at 3.3V — bytes never shift (the poll sees only 0x00/0xFF). A
+                // real GB/GBC link is 5V, so drive the dump at 5V for adequate
+                // clock/data edge margin. Multiboot above stays at 3.3V (it uses
+                // the GBA-native serial, which clocks fine at 3.3V).
+                await usb.setVoltage('5v');
+                log("Switched link to 5V for GBC dump");
+                await delay(100);
                 await usb.setTimingConfig(50, 1);
                 await delay(100);
                 await runDumpLoop();
@@ -190,6 +205,11 @@ async function startDumpOnly() {
             await usb.setMode(MODE.GB_LINK);
             await delay(100);
         }
+        // Drive the GBC dump at 5V (real GB/GBC link voltage). See the matching
+        // note in startDump() — 3.3V will not clock the GBC-mode serial slave.
+        await usb.setVoltage('5v');
+        log("Switched link to 5V for GBC dump");
+        await delay(100);
         await usb.setTimingConfig(50, 1);
         await delay(100);
 
@@ -355,6 +375,12 @@ async function startRestore() {
             await usb.setMode(MODE.GB_LINK);
             await delay(100);
         }
+        // Restore clocks the GBC the same way a dump does, so it needs the same
+        // 5V link. In the normal flow the dump path already switched to 5V, but
+        // set it explicitly here so Restore does not depend on that having run.
+        await usb.setVoltage('5v');
+        log("Switched link to 5V for GBC restore");
+        await delay(100);
         // Same fast-protocol timing the dump uses: 1 byte/exchange, 50µs gap.
         await usb.setTimingConfig(50, 1);
         await delay(100);
