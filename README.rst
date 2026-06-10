@@ -32,6 +32,18 @@ without re-sending the multiboot. Some cartridges have a voltage supervisor that
 resets the GBA on insertion — a small piece of kapton tape over pin 30 (/RESET,
 3rd pin from the right), or inserting slowly, avoids this.
 
+Link voltage
+~~~~~~~~~~~~
+
+Multiboot runs at **3.3V** (the GBA-native serial), but the dump and restore are
+driven at **5V** — they are clocked by the GBLink as SPI master and the GBA's
+GBC-mode serial slave will not synchronize to that clock at 3.3V (the receiver
+sees only ``0x00``/``0xFF`` and the dump never starts). The original GBA (AGB)
+link port is nominally 3.3V; if you are unsure your unit tolerates 5V, verify
+before relying on this. Set ``window.CART_DOCTOR_DEBUG = true`` in the browser
+console before a dump to log what the header poll actually receives. See
+``docs/5v-gbc-dump.md`` for the full investigation.
+
 Restoring a save
 ----------------
 
