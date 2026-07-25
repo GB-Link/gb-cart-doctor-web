@@ -9,7 +9,7 @@
 <body>
     <div class="card">
         <h1>GB-Link Cart Doctor</h1>
-        <p class="subtitle">Dump and restore GB/GBC cartridges via GBA multiboot</p>
+        <p class="subtitle">Dump and restore GB/GBC and GBA cartridges via GBA multiboot</p>
 
         <div id="browserWarning" class="warning" style="display:none">
             Neither WebUSB nor WebSerial supported in this browser. Use Chrome/Edge or Firefox 151+.
@@ -25,7 +25,17 @@
         </div>
 
         <div class="section">
-            <h2>2. Dump</h2>
+            <h2>2. Cartridge type</h2>
+            <p class="hint">Which cartridge do you want to work with?</p>
+            <div class="btn-row">
+                <button id="modeGbBtn" class="btn btn-toggle">GB / GBC</button>
+                <button id="modeGbaBtn" class="btn btn-toggle">GBA</button>
+            </div>
+        </div>
+
+        <div id="gbSections" style="display:none">
+        <div class="section">
+            <h2>3. Dump</h2>
             <p class="hint">Power on the GBA <b>without</b> a cartridge inserted, then click "Send Multiboot". After the multiboot completes and the GBA switches to GBC mode, insert your GB/GBC cartridge. Some cartridges have a voltage supervisor that resets the GBA on insertion — placing a small piece of kapton tape over pin 30 (/RESET, 3rd pin from the right) on the cartridge prevents this. Inserting slowly can also help. Once the cartridge is detected, press:</p>
             <ul class="hint-list">
                 <li><b>A</b> — Dump ROM only</li>
@@ -35,13 +45,12 @@
             <div class="btn-row">
                 <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot</button>
                 <button id="dumpOnlyBtn" class="btn" disabled>Homebrew Already Loaded</button>
-                <button id="cancelBtn" class="btn btn-danger" disabled>Cancel</button>
             </div>
             <p class="hint">"Send Multiboot" loads the dumper ROM onto the GBA, then waits — press a button on the GBA to dump, or use the Restore section below. Click "Homebrew Already Loaded" instead to skip the multiboot when the GBA is already running the dumper ROM (e.g. after a previous dump).</p>
         </div>
 
         <div class="section">
-            <h2>3. Restore a save (write to cart)</h2>
+            <h2>4. Restore a save (write to cart)</h2>
             <p class="hint">
                 <b>This overwrites the save on the cartridge.</b> Make sure the
                 GBA is already running the dumper ROM (use "Send Multiboot"
@@ -55,6 +64,30 @@
                 <button id="restoreBtn" class="btn btn-primary" disabled>Restore Save</button>
             </div>
         </div>
+        </div>
+
+        <div id="gbaSections" style="display:none">
+        <div class="section">
+            <h2>3. GBA cartridge</h2>
+            <p class="hint">Power on the GBA <b>without</b> a cartridge (or hold <b>START+SELECT</b> at the logo if one is inserted), then click "Send GBA Dumper". Once the dumper is running, insert your GBA cartridge — the same voltage-supervisor caveat as above applies (kapton tape over the /RESET pin, or insert slowly) — and use the buttons below. Everything is controlled from the browser; the BIOS dump needs no cartridge at all. A ROM dump runs at roughly 35–40 KB/s (about 2 minutes for 4 MB, 13–15 minutes for 32 MB).</p>
+            <div class="btn-row">
+                <button id="gbaSendBtn" class="btn btn-primary" disabled>Send GBA Dumper</button>
+                <button id="gbaLoadedBtn" class="btn" disabled>GBA Homebrew Already Loaded</button>
+            </div>
+            <div id="gbaCartPanel" class="hint" style="display:none"></div>
+            <div class="btn-row">
+                <button id="gbaInfoBtn" class="btn" disabled>Read Cartridge</button>
+                <button id="gbaDumpRomBtn" class="btn btn-primary" disabled>Dump ROM</button>
+                <button id="gbaDumpSaveBtn" class="btn btn-primary" disabled>Dump Save</button>
+                <button id="gbaBiosBtn" class="btn" disabled>Dump BIOS</button>
+            </div>
+            <p class="hint"><b>Restore / erase overwrite the save on the cartridge.</b> The restore file's size must exactly match the cart's save memory (512&nbsp;B or 8&nbsp;KB EEPROM, 32&nbsp;KB SRAM, 64&nbsp;KB or 128&nbsp;KB flash), or it is refused.</p>
+            <input type="file" id="gbaRestoreFile" accept=".sav,.srm,application/octet-stream">
+            <div class="btn-row">
+                <button id="gbaRestoreBtn" class="btn btn-primary" disabled>Restore Save</button>
+                <button id="gbaEraseBtn" class="btn btn-danger" disabled>Erase Save</button>
+            </div>
+        </div>
 
         <div class="section">
             <h2>Progress</h2>
@@ -66,7 +99,7 @@
         </div>
 
         <div id="downloadSection" class="section" style="display:none">
-            <h2>4. Download</h2>
+            <h2>5. Download</h2>
         </div>
 
         <div class="section">
@@ -74,7 +107,7 @@
             <div id="log" class="log"></div>
         </div>
         <footer class="app-footer">
-            <p>Version: 1.2.0</p>
+            <p>Version: 1.3.0</p>
             <p>
                 Requires <a href="https://github.com/GB-Link/GBLink-Firmware" target="_blank">USB
                     Firmware</a> - <a href="https://github.com/GB-Link/gb-cart-doctor-web" target="_blank">Source</a>
@@ -85,6 +118,7 @@
     <script src="usb_connection.js"></script>
     <script src="serial_connection.js"></script>
     <script src="multiboot.js"></script>
+    <script src="gba_cart.js"></script>
     <script src="dump_receiver.js"></script>
     <script src="dump_receiver_fast.js"></script>
     <script src="restore_sender_fast.js"></script>

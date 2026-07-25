@@ -9,6 +9,18 @@ let restoreSender = null;
 let romData = null;
 let restoreData = null;   // Uint8Array of a loaded .sav awaiting restore
 
+// --- GBA cartridge state ---
+let gbaRomData = null;        // gba-cart-dumper_mb.gba multiboot image
+let gbaClient = null;         // GbaCartClient once a payload session exists
+let gbaBusy = false;          // a GBA operation is holding the link
+let gbaReady = false;         // payload answered a ping; action buttons live
+let gbaRestoreData = null;    // Uint8Array of a loaded GBA .sav
+let gbaCartInfo = null;       // last readInfo() result (names the downloads)
+// The GBA protocol needs 3.3V + 32-bit timing. GB/GBC dumps/restores switch
+// the link to 5V + byte timing, so their entry points clear this flag and the
+// next GBA action reconfigures the link first.
+let gbaLinkConfigured = false;
+
 // Prefer WebUSB; fall back to WebSerial (Firefox 151+, or Chromium with WebUSB disabled).
 const hasUsb = ('usb' in navigator);
 const hasSerial = ('serial' in navigator);
@@ -41,15 +53,28 @@ function updateButtons() {
     const connectLabel = transport === 'serial' ? "Connect Serial" : "Connect USB";
     connectBtn.textContent = connected ? "Disconnect" : connectLabel;
     connectBtn.disabled = !transport;
-    document.getElementById("startBtn").disabled = !connected || !romData || dumpRunning || !!restoreSender;
-    document.getElementById("dumpOnlyBtn").disabled = !connected || dumpRunning || !!restoreSender;
+    document.getElementById("startBtn").disabled = !connected || !romData || dumpRunning || !!restoreSender || gbaBusy;
+    document.getElementById("dumpOnlyBtn").disabled = !connected || dumpRunning || !!restoreSender || gbaBusy;
     // Restore may take over an idle (polling) dump loop, so it is NOT gated on
-    // dumpRunning — only on an in-flight restore.
-    document.getElementById("restoreBtn").disabled = !connected || !restoreData || !!restoreSender;
+    // dumpRunning — only on an in-flight restore (or a GBA op on the link).
+    document.getElementById("restoreBtn").disabled = !connected || !restoreData || !!restoreSender || gbaBusy;
     // Cancel is available for the whole dump session (incl. the uncancellable-mid-flight
     // multiboot, where it takes effect once multiboot returns) as well as for an
     // active receiver or restore — so a wedged setup is never a dead end.
-    document.getElementById("cancelBtn").disabled = !dumpRunning && !dumpReceiver && !restoreSender;
+    document.getElementById("cancelBtn").disabled = !dumpRunning && !dumpReceiver && !restoreSender && !gbaBusy;
+
+    // GBA section: sending the dumper (or adopting a running one) needs an
+    // idle link; the action buttons additionally need a live payload session.
+    const linkBusy = dumpRunning || !!restoreSender || gbaBusy;
+    document.getElementById("gbaSendBtn").disabled = !connected || !gbaRomData || linkBusy;
+    document.getElementById("gbaLoadedBtn").disabled = !connected || linkBusy;
+    const gbaActionsOff = !connected || linkBusy || !gbaReady;
+    document.getElementById("gbaInfoBtn").disabled = gbaActionsOff;
+    document.getElementById("gbaDumpRomBtn").disabled = gbaActionsOff;
+    document.getElementById("gbaDumpSaveBtn").disabled = gbaActionsOff;
+    document.getElementById("gbaBiosBtn").disabled = gbaActionsOff;
+    document.getElementById("gbaEraseBtn").disabled = gbaActionsOff;
+    document.getElementById("gbaRestoreBtn").disabled = gbaActionsOff || !gbaRestoreData;
 }
 
 function formatSize(bytes) {
@@ -76,14 +101,42 @@ async function loadMultibootROM() {
     }
 }
 
+async function loadGbaDumperROM() {
+    try {
+        const resp = await fetch("gba-cart-dumper_mb.gba", { cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        gbaRomData = new Uint8Array(await resp.arrayBuffer());
+        let h = 0;
+        for (let i = 0; i < gbaRomData.length; i++) h = ((h * 31) + gbaRomData[i]) >>> 0;
+        log(`GBA dumper ROM loaded: ${formatSize(gbaRomData.length)} (build ${h.toString(16).padStart(8, '0')})`);
+        updateButtons();
+    } catch (e) {
+        log("Failed to load the GBA dumper ROM (gba-cart-dumper_mb.gba) — GBA cartridge features disabled.", "error");
+    }
+}
+
+function resetGbaSession() {
+    // The client wraps a specific transport object — a reconnect (which
+    // constructs a new UsbConnection/SerialConnection) invalidates it.
+    if (gbaClient) gbaClient.cancel();
+    gbaClient = null;
+    gbaReady = false;
+    gbaCartInfo = null;
+    gbaLinkConfigured = false;
+    const panel = document.getElementById("gbaCartPanel");
+    if (panel) panel.style.display = "none";
+}
+
 async function toggleConnect(kind = 'usb') {
     if (usb.isConnected) {
         if (dumpReceiver) dumpReceiver.cancel();
+        resetGbaSession();
         await usb.disconnect();
         log("Disconnected.");
         setStatus("Disconnected");
     } else {
         try {
+            resetGbaSession();
             usb = (kind === 'serial') ? new SerialConnection() : new UsbConnection();
             setStatus("Connecting...");
             await usb.connect();
@@ -108,6 +161,7 @@ async function startDump() {
     // would clock the same GBC and corrupt both streams.
     dumpRunning = true;
     dumpCancelRequested = false;
+    gbaLinkConfigured = false; // this path moves the link to 5V / byte timing
     updateButtons();
     document.getElementById("downloadSection").style.display = "none";
     const progressBar = document.getElementById("progressFill");
@@ -192,6 +246,7 @@ async function startDumpOnly() {
 
     dumpRunning = true;
     dumpCancelRequested = false;
+    gbaLinkConfigured = false; // this path moves the link to 5V / byte timing
     updateButtons();
 
     const progressBar = document.getElementById("progressFill");
@@ -266,9 +321,28 @@ async function runDumpLoop() {
     }
 }
 
+// "TITLE [CODEMK]" from the last cart info, sanitized for filenames — the
+// same shape the Wii dumper used. Falls back to a timestamp.
+function gbaCartBaseName() {
+    if (gbaCartInfo && (gbaCartInfo.title || gbaCartInfo.code)) {
+        const raw = `${gbaCartInfo.title || "UNTITLED"} [${gbaCartInfo.code || ""}${gbaCartInfo.maker || ""}]`;
+        return raw.replace(/[\\/:*?"<>|]/g, "_").replace(/[\x00-\x1F\x7F]/g, "_");
+    }
+    return `gba_dump_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}`;
+}
+
 function offerDownload(data, type) {
-    const ext = type === "ROM" ? ".gb" : ".sav";
-    const filename = `dump_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}${ext}`;
+    let filename;
+    if (type === "GBA_ROM") {
+        filename = `${gbaCartBaseName()}.gba`;
+    } else if (type === "GBA_SAVE") {
+        filename = `${gbaCartBaseName()}.sav`;
+    } else if (type === "GBA_BIOS") {
+        filename = "gba_bios.bin";
+    } else {
+        const ext = type === "ROM" ? ".gb" : ".sav";
+        filename = `dump_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}${ext}`;
+    }
 
     const blob = new Blob([data], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
@@ -297,6 +371,10 @@ function cancelDump() {
     if (restoreSender) {
         restoreSender.cancel();
         log("Cancelling restore...", "error");
+    }
+    if (gbaBusy && gbaClient) {
+        gbaClient.cancel();
+        log("Cancelling GBA operation...", "error");
     }
 }
 
@@ -347,6 +425,7 @@ async function startRestore() {
     // on the one link. (confirm() is blocking, so no click interleaves before
     // this assignment.)
     restoreSender = new FastRestoreSender(usb, restoreData, log);
+    gbaLinkConfigured = false; // this path moves the link to 5V / byte timing
     updateButtons();
 
     // If a dump poll loop is running (e.g. right after multiboot), stop it
@@ -417,6 +496,274 @@ async function startRestore() {
     updateButtons();
 }
 
+// ============================== GBA cartridges ==============================
+
+// Put the link in the state the GBA payload protocol needs: GB_LINK module,
+// 3.3V (GBA-native serial — the 5V requirement is GBC-mode only), 32-bit
+// words at multiboot pacing. Cheap to skip when nothing changed it since.
+async function gbaConfigureLink(force = false) {
+    if (gbaLinkConfigured && !force) return;
+    if (usb.isNewFirmware) {
+        await usb.setMode(MODE.GB_LINK);
+        await delay(100);
+    }
+    await usb.setVoltage('3v3');
+    await delay(100);
+    await usb.setTimingConfig(36, 4);
+    await delay(50);
+    gbaLinkConfigured = true;
+}
+
+function headerInfoFromBytes(bytes) {
+    const ascii = (from, len) => {
+        let s = "";
+        for (let i = from; i < from + len; i++) {
+            const c = bytes[i];
+            if (!c) break;
+            s += (c >= 0x20 && c < 0x7F) ? String.fromCharCode(c) : "_";
+        }
+        return s.trim();
+    };
+    const title = ascii(0xA0, 12), code = ascii(0xAC, 4), maker = ascii(0xB0, 2);
+    if (!title && !code) return null;
+    return { title, code, maker };
+}
+
+function renderGbaCartPanel(text) {
+    const panel = document.getElementById("gbaCartPanel");
+    panel.style.display = "block";
+    panel.textContent = text; // cart-controlled strings: never innerHTML
+}
+
+async function gbaReadInfoInner() {
+    setStatus("Reading cartridge...");
+    const info = await gbaClient.readInfo();
+    if (info.noCart) {
+        gbaCartInfo = null;
+        renderGbaCartPanel("No cartridge detected. Insert a GBA cartridge " +
+            "(slowly, or use the kapton-tape trick if the GBA resets), then click \"Read Cartridge\".");
+        setStatus("No GBA cartridge");
+        log("No GBA cartridge detected.");
+        return;
+    }
+    gbaCartInfo = info;
+    const saveTxt = info.savesize > 0 ? formatSize(info.savesize) : "none detected";
+    renderGbaCartPanel(`${info.title || "(no title)"} [${info.code}${info.maker}] — ` +
+        `ROM: ${formatSize(info.gamesize)} — Save: ${saveTxt}`);
+    setStatus("Cartridge identified");
+    log(`GBA cart: ${info.title} [${info.code}${info.maker}] — ROM ${formatSize(info.gamesize)}, save ${saveTxt}`, "success");
+}
+
+// Shared wrapper for the GBA action buttons: claims the link, resets the
+// progress UI, funnels cancel/errors into the log.
+async function runGbaOp(label, fn) {
+    if (!usb.isConnected || !gbaReady || !gbaClient || dumpRunning || restoreSender || gbaBusy) return;
+    gbaBusy = true;
+    gbaClient.cancelRequested = false;
+    updateButtons();
+    document.getElementById("progressFill").style.width = "0%";
+    document.getElementById("progressText").textContent = `${label}...`;
+    try {
+        await gbaConfigureLink();
+        setStatus(`${label}...`);
+        await fn();
+    } catch (e) {
+        if (e && e.code === "cancelled") {
+            log(`${label} cancelled.`, "error");
+            setStatus("Cancelled");
+        } else {
+            log(`${label} failed: ${e.message}`, "error");
+            setStatus(`${label} failed`);
+        }
+    }
+    gbaBusy = false;
+    updateButtons();
+}
+
+function gbaProgress(label, startTime) {
+    const progressBar = document.getElementById("progressFill");
+    const progressText = document.getElementById("progressText");
+    return (done, total) => {
+        const pct = Math.floor((done / total) * 100);
+        progressBar.style.width = `${pct}%`;
+        const elapsed = (Date.now() - startTime) / 1000;
+        const rate = elapsed > 0 ? done / elapsed : 0;
+        const remaining = rate > 0 ? Math.floor((total - done) / rate) : 0;
+        const eta = done > 0x2000 ? formatTime(remaining) : "calculating...";
+        progressText.textContent =
+            `${label} — ${pct}% (${formatSize(done)} / ${formatSize(total)}) — ETA: ${eta}`;
+    };
+}
+
+async function sendGbaDumper() {
+    if (!usb.isConnected || !gbaRomData || dumpRunning || restoreSender || gbaBusy) return;
+    gbaBusy = true;
+    gbaReady = false;
+    gbaCartInfo = null;
+    updateButtons();
+    document.getElementById("progressFill").style.width = "0%";
+    try {
+        log("--- GBA: sending cart dumper payload ---");
+        setStatus("Sending GBA dumper...");
+        if (usb.isNewFirmware) {
+            await usb.setMode(MODE.GB_LINK);
+            await delay(100);
+        }
+        // Same 3.3V multiboot preamble as the GB/GBC path.
+        await usb.setVoltage('3v3');
+        await delay(100);
+        await usb.setTimingConfig(36, 4);
+
+        if (!usb.isNewFirmware) {
+            await delay(10);
+            while (true) {
+                try {
+                    const data = await usb.readBytesRaw(64);
+                    if (!data || data.length === 0) break;
+                    if (data.length < 64) break;
+                } catch (e) { break; }
+            }
+        }
+
+        const ok = await GBAMultiboot.multiboot(usb, gbaRomData, log);
+        if (!ok) {
+            log("GBA dumper multiboot failed.", "error");
+            setStatus("Multiboot failed");
+        } else {
+            gbaLinkConfigured = true; // multiboot ran at exactly this config
+            gbaClient = new GbaCartClient(usb, log);
+            await delay(800); // let the payload boot
+            setStatus("Checking payload...");
+            if (await gbaClient.ping(5000)) {
+                gbaReady = true;
+                log("GBA dumper is running.", "success");
+                await gbaReadInfoInner(); // shows "no cartridge" until one is inserted
+            } else {
+                log("The payload did not answer — check the cable and try again.", "error");
+                setStatus("Payload not responding");
+            }
+        }
+    } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        setStatus("Error");
+    }
+    gbaBusy = false;
+    updateButtons();
+}
+
+async function gbaAlreadyLoaded() {
+    if (!usb.isConnected || dumpRunning || restoreSender || gbaBusy) return;
+    gbaBusy = true;
+    updateButtons();
+    try {
+        log("--- GBA: adopting an already-running dumper payload ---");
+        await gbaConfigureLink(true);
+        gbaClient = new GbaCartClient(usb, log);
+        setStatus("Looking for the GBA dumper...");
+        if (await gbaClient.ping(5000)) {
+            gbaReady = true;
+            log("GBA dumper found.", "success");
+            await gbaReadInfoInner();
+        } else {
+            gbaReady = false;
+            log("No running GBA dumper payload found. Use \"Send GBA Dumper\" first.", "error");
+            setStatus("No payload found");
+        }
+    } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        setStatus("Error");
+    }
+    gbaBusy = false;
+    updateButtons();
+}
+
+async function gbaReadInfo() {
+    await runGbaOp("Read cartridge", gbaReadInfoInner);
+}
+
+async function gbaDumpRom() {
+    await runGbaOp("GBA ROM dump", async () => {
+        const t0 = Date.now();
+        const { data } = await gbaClient.dumpRom(gbaProgress("Dumping ROM", t0));
+        // The dump starts with the cart header — recover names for the
+        // download even if Read Cartridge was never clicked.
+        if (!gbaCartInfo) gbaCartInfo = headerInfoFromBytes(data);
+        log(`GBA ROM dump complete: ${formatSize(data.length)} in ${formatTime(Math.floor((Date.now() - t0) / 1000))}.`, "success");
+        setStatus("ROM dump complete");
+        document.getElementById("progressText").textContent = "Complete!";
+        offerDownload(data, "GBA_ROM");
+    });
+}
+
+async function gbaDumpSave() {
+    await runGbaOp("GBA save dump", async () => {
+        const t0 = Date.now();
+        const { data } = await gbaClient.dumpSave(gbaProgress("Dumping save", t0));
+        log(`GBA save dump complete: ${formatSize(data.length)}.`, "success");
+        setStatus("Save dump complete");
+        document.getElementById("progressText").textContent = "Complete!";
+        offerDownload(data, "GBA_SAVE");
+    });
+}
+
+async function gbaDumpBios() {
+    await runGbaOp("GBA BIOS dump", async () => {
+        const t0 = Date.now();
+        const { data } = await gbaClient.dumpBios(gbaProgress("Dumping BIOS", t0));
+        log(`GBA BIOS dump complete: ${formatSize(data.length)}.`, "success");
+        setStatus("BIOS dump complete");
+        document.getElementById("progressText").textContent = "Complete!";
+        offerDownload(data, "GBA_BIOS");
+    });
+}
+
+async function gbaRestoreSave() {
+    if (!gbaRestoreData) return;
+    if (!window.confirm(
+        `This will OVERWRITE the save on the inserted GBA cartridge with the loaded ` +
+        `${formatSize(gbaRestoreData.length)} file. This cannot be undone. Continue?`)) {
+        return;
+    }
+    await runGbaOp("GBA save restore", async () => {
+        const t0 = Date.now();
+        log("Uploading save, then writing to the cartridge — flash carts can take a minute.");
+        await gbaClient.restoreSave(gbaRestoreData, gbaProgress("Uploading save", t0));
+        log("GBA save restored. Power-cycle the cartridge and check in-game.", "success");
+        setStatus("Restore complete");
+        document.getElementById("progressText").textContent = "Restore complete!";
+    });
+}
+
+async function gbaEraseSave() {
+    if (!window.confirm(
+        "This will ERASE (zero-fill) the save on the inserted GBA cartridge. " +
+        "This cannot be undone. Continue?")) {
+        return;
+    }
+    await runGbaOp("GBA save erase", async () => {
+        const { savesize } = await gbaClient.eraseSave();
+        log(`GBA save erased (${formatSize(savesize)} zero-filled).`, "success");
+        setStatus("Save erased");
+        document.getElementById("progressText").textContent = "Save erased.";
+    });
+}
+
+function loadGbaRestoreFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+        gbaRestoreData = new Uint8Array(reader.result);
+        log(`GBA save loaded: ${file.name} (${formatSize(gbaRestoreData.length)})`);
+        updateButtons();
+    };
+    reader.onerror = () => {
+        log("Failed to read the GBA save file.", "error");
+        gbaRestoreData = null;
+        updateButtons();
+    };
+    reader.readAsArrayBuffer(file);
+}
+
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -442,10 +789,23 @@ document.addEventListener("DOMContentLoaded", () => {
         loadRestoreFile(e.target.files[0]);
     });
 
+    document.getElementById("gbaSendBtn").addEventListener("click", sendGbaDumper);
+    document.getElementById("gbaLoadedBtn").addEventListener("click", gbaAlreadyLoaded);
+    document.getElementById("gbaInfoBtn").addEventListener("click", gbaReadInfo);
+    document.getElementById("gbaDumpRomBtn").addEventListener("click", gbaDumpRom);
+    document.getElementById("gbaDumpSaveBtn").addEventListener("click", gbaDumpSave);
+    document.getElementById("gbaBiosBtn").addEventListener("click", gbaDumpBios);
+    document.getElementById("gbaRestoreBtn").addEventListener("click", gbaRestoreSave);
+    document.getElementById("gbaEraseBtn").addEventListener("click", gbaEraseSave);
+    document.getElementById("gbaRestoreFile").addEventListener("change", (e) => {
+        loadGbaRestoreFile(e.target.files[0]);
+    });
+
     if (!transport) {
         document.getElementById("browserWarning").style.display = "block";
     }
 
     loadMultibootROM();
+    loadGbaDumperROM();
     updateButtons();
 });

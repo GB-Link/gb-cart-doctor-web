@@ -44,6 +44,46 @@ before relying on this. Set ``window.CART_DOCTOR_DEBUG = true`` in the browser
 console before a dump to log what the header poll actually receives. See
 ``docs/5v-gbc-dump.md`` for the full investigation.
 
+GBA cartridges
+--------------
+
+The web app can also dump and restore **GBA** cartridges, using a second
+multiboot payload: ``web/gba-cart-dumper_mb.gba`` (source in
+``source/gba_cart_dumper/``), a port of FIX94's *GBA Link Cable Dumper* whose
+GameCube JOY-bus link is replaced with 32-bit normal-mode SIO to the GBLink.
+Boot the GBA **without** a cartridge (or hold **START+SELECT** at the logo if
+one is inserted), click **Send GBA Dumper**, then insert the cartridge — the
+same voltage-supervisor caveat as GB/GBC insertion applies. Everything is
+driven from the browser:
+
+- **Read Cartridge** — title, game code, ROM size, save size (save type is
+  detected from the ROM's ``EEPROM_V``/``SRAM_V``/``FLASH*_V`` ID strings).
+- **Dump ROM** — saved as ``TITLE [CODE].gba``.
+- **Dump Save / Restore Save / Erase Save** — EEPROM 512 B/8 KB, SRAM 32 KB,
+  Flash 64/128 KB. A restore is refused unless the file size exactly matches
+  the detected save size; erase zero-fills.
+- **Dump BIOS** — the 16 KB console BIOS (Dark Fader's ``MidiKey2Freq``
+  method); no cartridge needed.
+
+Unlike the GBC path, the whole GBA session runs at **3.3 V** with the same
+32-bit timing multiboot uses, so no voltage switching is involved. Transfers
+move in 256-byte sections, each verified by an XOR32 checksum and re-sent on
+mismatch (the original Wii protocol had no integrity checking). Throughput is
+bounded by the USB round trip at roughly 35-40 KB/s — about 2 minutes for a
+4 MB ROM, 13-15 minutes for 32 MB; saves and BIOS take seconds. EEPROM save
+type/size detection reads the EEPROM itself, so **Read Cartridge** can take a
+few extra seconds on EEPROM games.
+
+To rebuild the payload::
+
+    cd source/gba_cart_dumper
+    DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make
+    cp gba-cart-dumper_mb.gba ../../web/
+
+The protocol has a word-for-word simulation test (no hardware needed)::
+
+    node web/test/gba_protocol_sim.mjs
+
 Restoring a save
 ----------------
 
@@ -134,3 +174,12 @@ Thanks to:
   https://github.com/AntonioND/gba-switch-to-gbc
 
 - ShinyQuagsire, the idea for the project.
+
+GBA cartridge support is ported from `wii-gba-link-cable-dumper
+<https://github.com/DamianS-eng/wii-gba-link-cable-dumper>`_ (MIT):
+
+- FIX94, the original GBA Link Cable Dumper.
+
+- Chishm, the cartridge save routines (SendSave / libSave).
+
+- Dark Fader, the GBA BIOS dump method.
