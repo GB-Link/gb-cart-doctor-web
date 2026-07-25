@@ -1,114 +1,109 @@
-gba-dump-gb
+GB-Link Cart Doctor
+===================
+
+Dump and restore **Game Boy / Game Boy Color / Game Boy Advance**
+cartridges from the browser. A GBA console is the
+cartridge reader; a `GBLink USB <https://github.com/GB-Link/GBLink-Firmware>`_
+adapter connects its link port to the PC, and the web app in ``web/`` drives
+everything over WebUSB (or WebSerial on Firefox 151+).
+
+How it works
+============
+
+Everything starts with a GBA multiboot upload over the link cable. Which
+payload is sent depends on the cartridge type picked in the app:
+
+- **Game Boy** — ``web/gba-switch-to-gbc_mb.gba`` switches the GBA into GBC
+  mode by software (the gba-switch-to-gbc trick), then dumps or restores the
+  inserted GB/GBC cartridge; the operation is chosen with the console's
+  buttons.
+- **Game Boy Advance** — ``web/gba-cart-dumper_mb.gba`` (a port of FIX94's
+  *GBA Link Cable Dumper* from GameCube JOY bus to 32-bit link-cable SIO)
+  stays in GBA mode; every operation is driven from the browser.
+
+Using the web app
 =================
 
-Switch a GBA into GBC mode by software, then **dump and restore** GB/GBC
-cartridges over the link cable — read out a cartridge's ROM or save, or write a
-save back into it.
+Serve ``web/`` as static files (e.g. ``python3 -m http.server``), open it in
+Chrome/Edge or Firefox 151+, click **Connect**, and pick the cartridge type —
+**Game Boy** or **Game Boy Advance**. Only the matching workflow is shown and
+the choice is remembered across reloads. Both workflows follow the same
+shape: load the homebrew (**Send Multiboot**, or **Homebrew Already Loaded**
+to adopt a payload that is still running), dump, restore.
 
-Boot ``gba-switch-to-gbc_mb.gba`` on the GBA **without** a cartridge inserted,
-wait for it to switch to GBC mode, then properly insert your GB/GBC cartridge.
-Once the cartridge is detected, the on-cart menu maps the buttons to:
+Game Boy / Game Boy Color
+-------------------------
 
-- **A** — dump the cartridge ROM (saved as a ``.gb`` file)
-- **B** — dump the cartridge SRAM / save (saved as a ``.sav`` file)
+Power on the GBA **without** a cartridge, send the multiboot, and wait for it
+to switch to GBC mode. Then insert the GB/GBC cartridge. Some cartridges have
+a voltage supervisor that resets the GBA on insertion — a small piece of
+kapton tape over pin 30 (/RESET, 3rd pin from the right), or inserting
+slowly, avoids this. Once the cartridge is detected, press on the console:
+
+- **A** — dump the cartridge ROM (``.gb`` file)
+- **B** — dump the cartridge SRAM / save (``.sav`` file)
 - **START** — dump both the ROM and the SRAM
-- **SELECT** — **restore** a save: write a loaded ``.sav`` back into the cart's SRAM
-
-GBLink Cart Doctor (web app)
-----------------------------
-
-The ``web/`` folder is **GBLink Cart Doctor**, a browser front-end (WebUSB, or
-WebSerial on Firefox 151+) that drives the whole process for you. It requires the
-`GBLink USB firmware <https://github.com/starlarkus/GBLink-Firmware>`_.
-Pick the cartridge type (**Game Boy** or **Game Boy Advance**) at the top —
-only the matching workflow is shown, and the choice is remembered across
-reloads.
-
-- **Send Multiboot** — push the dumper ROM to the GBA and start listening.
-- **Homebrew Already Loaded** — skip the multiboot when the GBA is already
-  running the dumper ROM (e.g. after a previous dump).
-- **Restore Save** — load a ``.sav`` file, click, then press **SELECT** on the
-  GBA to write it back.
+- **SELECT** — restore: write the ``.sav`` loaded in the web app back into
+  the cart's SRAM
 
 Dumps download automatically, and several cartridges can be dumped in a row
-without re-sending the multiboot. Some cartridges have a voltage supervisor that
-resets the GBA on insertion — a small piece of kapton tape over pin 30 (/RESET,
-3rd pin from the right), or inserting slowly, avoids this.
+without re-sending the multiboot. ROM and SRAM transfers handle the common
+mappers — MBC1, MBC2, MBC3 and MBC5 (including rumble carts); MBC2's built-in
+512×4-bit save works for both dump and restore.
 
 Link voltage
 ~~~~~~~~~~~~
 
-Multiboot runs at **3.3V** (the GBA-native serial), but the dump and restore are
-driven at **5V** — they are clocked by the GBLink as SPI master and the GBA's
-GBC-mode serial slave will not synchronize to that clock at 3.3V (the receiver
-sees only ``0x00``/``0xFF`` and the dump never starts). The original GBA (AGB)
-link port is nominally 3.3V; if you are unsure your unit tolerates 5V, verify
-before relying on this. Set ``window.CART_DOCTOR_DEBUG = true`` in the browser
-console before a dump to log what the header poll actually receives. See
-``docs/5v-gbc-dump.md`` for the full investigation.
+Multiboot runs at **3.3V** (the GBA-native serial), but the GB/GBC dump and
+restore are driven at **5V** — they are clocked by the GBLink as SPI master
+and the GBA's GBC-mode serial slave will not synchronize to that clock at
+3.3V (the receiver sees only ``0x00``/``0xFF`` and the dump never starts).
+The original GBA (AGB) link port is nominally 3.3V; if you are unsure your
+unit tolerates 5V, verify before relying on this. Set
+``window.CART_DOCTOR_DEBUG = true`` in the browser console before a dump to
+log what the header poll actually receives. See ``docs/3.3v_5v_issues.md``.
 
-GBA cartridges
---------------
+Game Boy Advance
+----------------
 
-The web app can also dump and restore **GBA** cartridges, using a second
-multiboot payload: ``web/gba-cart-dumper_mb.gba`` (source in
-``source/gba_cart_dumper/``), a port of FIX94's *GBA Link Cable Dumper* whose
-GameCube JOY-bus link is replaced with 32-bit normal-mode SIO to the GBLink.
-Boot the GBA **without** a cartridge (or hold **START+SELECT** at the logo if
-one is inserted), click **Send Multiboot** in the Game Boy Advance workflow,
-then insert the cartridge. Everything is driven from the browser:
+Power on the GBA **without** a cartridge (or hold **START+SELECT** at the
+logo if one is inserted), send the multiboot, then insert the cartridge and
+work from the browser:
 
 - **Read Cartridge** — title, game code, ROM size, save size (save type is
   detected from the ROM's ``EEPROM_V``/``SRAM_V``/``FLASH*_V`` ID strings).
 - **Dump ROM** — saved as ``TITLE [CODE].gba``.
 - **Dump Save / Restore Save / Erase Save** — EEPROM 512 B/8 KB, SRAM 32 KB,
-  Flash 64/128 KB. A restore is refused unless the file size exactly matches
-  the detected save size; erase zero-fills.
+  Flash 64/128 KB.
 - **Dump BIOS** — the 16 KB console BIOS (Dark Fader's ``MidiKey2Freq``
   method); no cartridge needed.
 
-Unlike the GBC path, the whole GBA session runs at **3.3 V** with the same
-32-bit timing multiboot uses, so no voltage switching is involved. Transfers
-move in 256-byte sections, each verified by an XOR32 checksum and re-sent on
-mismatch (the original Wii protocol had no integrity checking). Throughput is
-bounded by the USB round trip at roughly 35-40 KB/s — about 2 minutes for a
-4 MB ROM, 13-15 minutes for 32 MB; saves and BIOS take seconds. EEPROM save
-type/size detection reads the EEPROM itself, so **Read Cartridge** can take a
-few extra seconds on EEPROM games.
+The whole GBA session runs at **3.3V** with the same 32-bit timing multiboot
+uses — no voltage switching involved. Throughput is bounded by the USB round
+trip at roughly 35–40 KB/s: about 2 minutes for a 4 MB ROM, 13–15 minutes for
+32 MB; saves and the BIOS take seconds. EEPROM save detection reads the
+EEPROM itself, so **Read Cartridge** can take a few extra seconds on EEPROM
+games.
 
-To rebuild the payload::
+Restoring and erasing saves
+===========================
 
-    cd source/gba_cart_dumper
-    DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make
-    cp gba-cart-dumper_mb.gba ../../web/
+Restoring is **destructive** — it overwrites the save on the cartridge, and
+the web app asks for confirmation first. In both workflows the transfer is
+**refused unless the loaded file's size exactly matches the cartridge's save
+memory**; on a refusal nothing is written. Every 256-byte section is
+checksum-verified and re-sent on a mismatch. The GBA workflow's **Erase
+Save** zero-fills the save memory (also behind a confirmation).
 
-The protocol has a word-for-word simulation test (no hardware needed)::
-
-    node web/test/gba_protocol_sim.mjs
-
-Restoring a save
-----------------
-
-Restoring is **destructive** — it overwrites the save currently on the
-cartridge. The web app asks for confirmation first, and the transfer is
-**refused unless the loaded file's size exactly matches the inserted cart's SRAM
-size**; on a refusal the cart returns to its menu so nothing is written. Each
-256-byte section is checksum-verified and re-sent on a mismatch.
-
-Note: the only content check is the SRAM **size**. A raw ``.sav`` carries no game
+Note: the only content check is the **size**. A raw ``.sav`` carries no game
 identity, so a same-size save from a *different* game (for example a 32 KB
-Pokémon Silver save written to a 32 KB Pokémon Yellow cart) will be accepted and
-will overwrite the target. Back up the destination cart first if you are unsure.
-
-Cartridge support
------------------
-
-ROM and SRAM transfers handle the common mappers — MBC1, MBC2, MBC3 and MBC5
-(including rumble carts). MBC2's built-in 512×4-bit save is supported for both
-dump and restore.
+Pokémon Silver save written to a 32 KB Pokémon Yellow cart) will be accepted
+and will overwrite the target. Back up the destination cart first if unsure.
 
 Device results
-==================
+==============
+
+The GBC-mode switch (Game Boy workflow):
 
 - GBA: It works.
 - GBA SP: It works.
@@ -118,50 +113,66 @@ Device results
   loop at the end of the code.
 - GB Player: It works.
 
+The Game Boy Advance workflow is tested on a GBA; it needs a console with a
+link port.
+
 Building
-==================
+========
 
-To build it, you need devkitPro (devkitARM) for the GBA ROM, and RGBDS for the
-GBC payload.
+**Game Boy payload chain** (RGBDS + devkitARM): assemble
+``source/gbc_payload/payload_fast.asm`` with RGBDS, run
+``source/gbc_payload/convert_to_c.py`` on the resulting ``payload_fast.gbc``
+to regenerate ``source/payload_array.h``, ``make`` the GBA ROM, and copy the
+output to ``web/gba-switch-to-gbc_mb.gba``. (``make_sender.ps1`` /
+``make_receiver.ps1`` drive the legacy nybble-protocol payload and its dummy
+receiver.)
 
-The actual GBA ROM can be built using make_sender.ps1.
+**Game Boy Advance payload** (devkitARM)::
 
-make_receiver.ps1 will make a dummy receiver which can be used to test the sender.
+    cd source/gba_cart_dumper
+    DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make
+    cp gba-cart-dumper_mb.gba ../../web/
 
-The web app uses the fast-protocol payload (``source/gbc_payload/payload_fast.asm``).
-To rebuild it: assemble the payload with RGBDS, run
-``source/gbc_payload/convert_to_c.py`` on the resulting ``payload_fast.gbc`` to
-regenerate ``source/payload_array.h``, ``make`` the GBA ROM, and copy the output
-to ``web/gba-switch-to-gbc_mb.gba``.
+**Protocol test** — the GBA protocol has a word-for-word simulation (no
+hardware needed)::
+
+    node web/test/gba_protocol_sim.mjs
 
 Technical details
 =================
 
-The Dumper (payload.asm) sends "single byte"s in 2 nybble transfers (masked with 0x10),
-and it expects to receive the "single byte" it sent during the next "single byte" transfer.
-Failing to do so will cause the transfer to restart from a checkpoint at the first occasion
-by sending a FAIL. OK and FAIL are masked with 0x40. Details below.
+Game Boy protocol
+-----------------
 
-First the GBC payload sends information about the transfer: whether it will be a ROM
-one or a SRAM one. After that, it sends the size and does an extra transfer to check
-that the receiver got the right size. If all went well, it sends an OK and starts
-the actual transfer.
+The web app uses the fast payload (``source/gbc_payload/payload_fast.asm``):
+raw bytes in 0x100-byte sections, one XOR checksum per section, an ACK per
+section, failed sections re-sent. A restore runs the same section protocol in
+reverse — the web client (the SPI master) clocks out each data byte, the
+cartridge writes it into SRAM and ACKs every section. A direction flag in the
+GBC payload selects dump (cart → master) vs restore (master → cart); SELECT
+on the GBA chooses restore, the other buttons choose a dump.
 
-During the transfer, the dumper will send 0x100 "single byte"s and do an extra transfer
-to also check the last byte it sent. If all went well, it sends an OK and continues on
-to the next batch of 0x100 "single byte"s.
+The legacy payload (``payload.asm``, still readable via ``dump_reader.py``)
+sent each byte as 2 nybble transfers masked with 0x10, echo-checked one
+transfer later, restarting from a checkpoint on mismatch; ``payload2.asm`` is
+its dummy receiver.
 
-payload2.asm contains a dummy receiver which sends back what it just received.
+Game Boy Advance protocol
+-------------------------
 
-The web app uses a faster variant (payload_fast.asm) that transfers raw bytes (no
-nybble masking) with a single XOR checksum per 0x100-byte section. A restore runs
-the same section protocol in reverse: the web client (the SPI master) clocks out each
-data byte, the cartridge writes it into SRAM, and the cartridge ACKs every section.
-A direction flag in the GBC payload selects dump (cart → master) vs restore
-(master → cart); SELECT on the GBA chooses restore, the other buttons choose a dump.
+The payload (``source/gba_cart_dumper/``) is an SPI **slave** on the GBA's
+32-bit normal-mode SIO; the GBLink clocks one word per exchange. Host control
+words carry ``0x4742`` ("GB") in the high half so a word torn by a mid-clock
+re-arm can never be mistaken for a command; while the payload is busy with
+the cartridge it is un-armed and the host reads a constant ``0xFFFFFFFF``.
+Commands use an echo-confirm handshake (command → bitwise-NOT echo → GO), and
+slow phases end with a DONE gate the host must acknowledge. Bulk data moves
+in 256-byte sections closed by an XOR32 checksum and a verdict word, re-sent
+on mismatch (the original Wii protocol had no integrity checking). The
+simulation test above models the payload state machine word for word.
 
 Credits
-=================
+=======
 
 Thanks to:
 
@@ -174,8 +185,6 @@ Thanks to:
 - AntonioND, the original gba-switch-to-gbc ROM this has been forked from:
 
   https://github.com/AntonioND/gba-switch-to-gbc
-
-- ShinyQuagsire, the idea for the project.
 
 GBA cartridge support is ported from `wii-gba-link-cable-dumper
 <https://github.com/DamianS-eng/wii-gba-link-cable-dumper>`_ (MIT):
