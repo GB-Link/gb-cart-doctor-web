@@ -21,6 +21,24 @@ let gbaCartInfo = null;       // last readInfo() result (names the downloads)
 // next GBA action reconfigures the link first.
 let gbaLinkConfigured = false;
 
+// Which workflow is on screen: "gb" | "gba" | null (nothing picked yet).
+// Purely presentational — a GBA payload session survives switching away.
+let cartMode = null;
+
+function setCartMode(mode) {
+    if (mode !== "gb" && mode !== "gba") return;
+    // Don't swap the visible controls out from under a running operation
+    // (the selector buttons are also disabled while one runs).
+    if (dumpRunning || restoreSender || gbaBusy) return;
+    cartMode = mode;
+    try { localStorage.setItem("cartDoctorMode", mode); } catch (e) { /* private browsing */ }
+    document.getElementById("gbSections").style.display = mode === "gb" ? "block" : "none";
+    document.getElementById("gbaSections").style.display = mode === "gba" ? "block" : "none";
+    document.getElementById("modeGbBtn").classList.toggle("active", mode === "gb");
+    document.getElementById("modeGbaBtn").classList.toggle("active", mode === "gba");
+    updateButtons();
+}
+
 // Prefer WebUSB; fall back to WebSerial (Firefox 151+, or Chromium with WebUSB disabled).
 const hasUsb = ('usb' in navigator);
 const hasSerial = ('serial' in navigator);
@@ -66,6 +84,8 @@ function updateButtons() {
     // GBA section: sending the dumper (or adopting a running one) needs an
     // idle link; the action buttons additionally need a live payload session.
     const linkBusy = dumpRunning || !!restoreSender || gbaBusy;
+    document.getElementById("modeGbBtn").disabled = linkBusy;
+    document.getElementById("modeGbaBtn").disabled = linkBusy;
     document.getElementById("gbaSendBtn").disabled = !connected || !gbaRomData || linkBusy;
     document.getElementById("gbaLoadedBtn").disabled = !connected || linkBusy;
     const gbaActionsOff = !connected || linkBusy || !gbaReady;
@@ -666,7 +686,7 @@ async function gbaAlreadyLoaded() {
             await gbaReadInfoInner();
         } else {
             gbaReady = false;
-            log("No running GBA dumper payload found. Use \"Send GBA Dumper\" first.", "error");
+            log("No running GBA dumper payload found. Use \"Send Multiboot\" first.", "error");
             setStatus("No payload found");
         }
     } catch (e) {
@@ -800,6 +820,12 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("gbaRestoreFile").addEventListener("change", (e) => {
         loadGbaRestoreFile(e.target.files[0]);
     });
+
+    document.getElementById("modeGbBtn").addEventListener("click", () => setCartMode("gb"));
+    document.getElementById("modeGbaBtn").addEventListener("click", () => setCartMode("gba"));
+    let savedMode = null;
+    try { savedMode = localStorage.getItem("cartDoctorMode"); } catch (e) { /* private browsing */ }
+    if (savedMode === "gb" || savedMode === "gba") setCartMode(savedMode);
 
     if (!transport) {
         document.getElementById("browserWarning").style.display = "block";

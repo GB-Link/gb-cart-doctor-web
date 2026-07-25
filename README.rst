@@ -20,6 +20,9 @@ GBLink Cart Doctor (web app)
 The ``web/`` folder is **GBLink Cart Doctor**, a browser front-end (WebUSB, or
 WebSerial on Firefox 151+) that drives the whole process for you. It requires the
 `GBLink USB firmware <https://github.com/starlarkus/GBLink-Firmware>`_.
+Pick the cartridge type (**Game Boy** or **Game Boy Advance**) at the top —
+only the matching workflow is shown, and the choice is remembered across
+reloads.
 
 - **Send Multiboot** — push the dumper ROM to the GBA and start listening.
 - **Homebrew Already Loaded** — skip the multiboot when the GBA is already
@@ -52,9 +55,8 @@ multiboot payload: ``web/gba-cart-dumper_mb.gba`` (source in
 ``source/gba_cart_dumper/``), a port of FIX94's *GBA Link Cable Dumper* whose
 GameCube JOY-bus link is replaced with 32-bit normal-mode SIO to the GBLink.
 Boot the GBA **without** a cartridge (or hold **START+SELECT** at the logo if
-one is inserted), click **Send GBA Dumper**, then insert the cartridge — the
-same voltage-supervisor caveat as GB/GBC insertion applies. Everything is
-driven from the browser:
+one is inserted), click **Send Multiboot** in the Game Boy Advance workflow,
+then insert the cartridge. Everything is driven from the browser:
 
 - **Read Cartridge** — title, game code, ROM size, save size (save type is
   detected from the ROM's ``EEPROM_V``/``SRAM_V``/``FLASH*_V`` ID strings).
