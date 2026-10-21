@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "libSave.h"
+#include "cartops.h"
 
 #define REG_WAITCNT *(vu16 *)(REG_BASE + 0x204)
 
@@ -50,28 +51,61 @@
 #define G_OKOK       0x4F4B4F4B /* "OKOK" — restore section checksum ok    */
 #define G_FAIL       0x4641494C /* "FAIL" — restore section checksum bad   */
 
+/* ROM dump stream (streamRom). The master's poll word has no rotational
+ * symmetry, so a shifted (torn) poll can never read as a valid one. */
+#define M_SPOLL      0x47425EED /* stream poll: keep sending                */
+#define M_FIN        0x4742F1A1 /* stream complete, return to idle          */
+#define M_SEEK       0x53000000 /* | section: resume the stream there       */
+#define R_DATA       0xDA000000 /* | section: 64 data words + check follow  */
+#define R_FILL       0xF1000000 /* | section: value, count, check follow    */
+#define R_END        0xE0000000 /* | section count: nothing left to send    */
+#define G_SYNC       0x53594E43 /* "SYNC" — lost word alignment, need a seek */
+
 /* Command numbers (low half of a 0x4742xxxx word). 1-5 match the original
- * Wii dumper vocabulary; 6 is new (cart info: sizes + header). */
+ * Wii dumper vocabulary; 6 is new (cart info: sizes + header); 7 runs a
+ * cart op program from the browser (flash cart writing, see cartops.h). */
 #define CMD_DUMP_ROM  1
 #define CMD_DUMP_SAVE 2
 #define CMD_RESTORE   3
 #define CMD_ERASE     4
 #define CMD_DUMP_BIOS 5
 #define CMD_INFO      6
-#define CMD_MAX       6
+#define CMD_CART_RUN  7
+#define CMD_MAX       7
 
 #define SECTION_BYTES 0x100
 #define SECTION_WORDS (SECTION_BYTES / 4)
 
-u8 save_data[0x20000] __attribute__ ((section (".sbss")));
+u8 save_data[0x20000] __attribute__ ((section (".sbss"), aligned (4)));
+
+#define OPS_RESULT_WORDS 0x1000
+static u32 opsResult[OPS_RESULT_WORDS] __attribute__ ((section (".sbss")));
+
+/* The ROM ends where the cart stops answering (open bus reads back the
+ * address) or, on carts whose chip is smaller than the 32 MB window, where
+ * its contents repeat: the whole 0xC0-byte header shows up again. */
+static bool romMirrorsAt(s32 i)
+{
+	vu32 *rom = (vu32*)0x08000000;
+	vu32 *at = (vu32*)(0x08000000 + i);
+	int j;
+	for(j = 0; j < 0xC0 / 4; j++)
+		if(at[j] != rom[j])
+			return false;
+	return true;
+}
 
 s32 getGameSize(void)
 {
 	if(*(vu32*)(0x08000004) != 0x51AEFF24)
 		return -1;
 	s32 i;
-	for(i = (1<<20); i < (1<<25); i<<=1)
+	for(i = (1<<16); i < (1<<25); i<<=1)
 	{
+		if(romMirrorsAt(i))
+			break;
+		if(i < (1<<20))
+			continue;
 		vu16 *rompos = (vu16*)(0x08000000+i);
 		int j;
 		bool romend = true;
@@ -91,7 +125,7 @@ s32 getGameSize(void)
 /* Unarmed: the master reads the SO-inactive level (0xFFFFFFFF) and knows we
  * are busy. Any clocking it does while we are unarmed is ignored by the
  * hardware — no data shifts without the start bit. */
-static void linkIdle(void)
+static inline __attribute__((always_inline)) void linkIdle(void)
 {
 	REG_SIOCNT = LNK_BASE;
 }
@@ -104,7 +138,7 @@ static void linkInit(void)
 
 /* Arm one word and block until the master has clocked the exchange.
  * Returns the word the master sent. */
-static u32 linkXfer(u32 out)
+static inline __attribute__((always_inline)) u32 linkXfer(u32 out)
 {
 	REG_SIODATA32 = out;
 	REG_SIOCNT = LNK_BASE | LNK_START;
@@ -117,7 +151,7 @@ static u32 linkXfer(u32 out)
  * longer than one master word (~33 µs at ~1 MHz) so any in-flight word runs
  * out against an unarmed (deaf) slave, then re-arm in the quiet gap. The web
  * client polls idle/busy states at millisecond cadence, so the gap is wide. */
-static void linkDesyncGuard(void)
+static inline __attribute__((always_inline)) void linkDesyncGuard(void)
 {
 	linkIdle();
 	volatile int g;
@@ -195,6 +229,127 @@ static bool streamFromMaster(u8 *base, u32 len)
 	return true;
 }
 
+/* A run of consecutive sections that each hold one repeated word (erased
+ * flash, padding). The ROM dump sends a run as one short fill record. */
+typedef struct { u32 start, count, value; } FillRun;
+#define MAX_FILL_RUNS (sizeof(save_data) / sizeof(FillRun))
+
+static u32 IWRAM_CODE __attribute__((noinline)) findFillRuns(u32 sections, FillRun *runs, u32 maxRuns)
+{
+	u32 n = 0, s;
+	for(s = 0; s < sections; s++)
+	{
+		const u32 *p = (const u32 *)(0x08000000 + s * SECTION_BYTES);
+		u32 v = p[0], w;
+		for(w = 1; w < SECTION_WORDS; w++)
+			if(p[w] != v)
+				break;
+		if(w < SECTION_WORDS)
+			continue;
+		if(n && runs[n-1].value == v && runs[n-1].start + runs[n-1].count == s)
+			runs[n-1].count++;
+		else if(n < maxRuns)
+		{
+			runs[n].start = s;
+			runs[n].count = 1;
+			runs[n].value = v;
+			n++;
+		}
+	}
+	return n;
+}
+
+/* Index of the first run starting at or after section s. */
+static inline __attribute__((always_inline)) u32 fillRunFrom(const FillRun *runs, u32 n, u32 s)
+{
+	u32 lo = 0, hi = n;
+	while(lo < hi)
+	{
+		u32 mid = (lo + hi) >> 1;
+		if(runs[mid].start < s)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+#define ROT1(c) (((c) << 1) | ((c) >> 31))
+
+/*
+ * Stream the ROM as self-describing records, with no per-section round trip:
+ *   data: R_DATA|section, 64 words, check
+ *   fill: R_FILL|section, value, count, check
+ *   end:  R_END|sections, repeated until the master finishes
+ * check folds every record word with c = rotl(c, 1) ^ word, so a dropped or
+ * repeated word fails it. The master polls with M_SPOLL and steers with
+ * M_SEEK|section (resume at a section after a bad record), M_FIN or
+ * M_ABORT, which may arrive in any exchange. A plain M_POLL means the master
+ * is back to idle polling (the page was reloaded mid-dump): stop too.
+ * Returns true on M_FIN.
+ */
+static bool IWRAM_CODE __attribute__((noinline)) streamRom(u32 sections, const FillRun *runs, u32 nruns)
+{
+	u32 s = 0, fi = 0, rx;
+#define SEND(v) do { rx = linkXfer(v); if(rx != M_SPOLL) goto command; } while(0)
+	while(1)
+	{
+		if(s >= sections)
+		{
+			SEND(R_END | sections);
+			continue;
+		}
+		if(fi < nruns && runs[fi].start == s)
+		{
+			const FillRun *r = &runs[fi];
+			u32 h = R_FILL | s;
+			u32 c = ROT1(ROT1(h) ^ r->value) ^ r->count;
+			SEND(h);
+			SEND(r->value);
+			SEND(r->count);
+			SEND(c);
+			s += r->count;
+			fi++;
+			continue;
+		}
+		{
+			const vu32 *p = (const vu32 *)(0x08000000 + s * SECTION_BYTES);
+			u32 h = R_DATA | s, c = h, w;
+			SEND(h);
+			for(w = 0; w < SECTION_WORDS; w++)
+			{
+				u32 v = p[w];
+				c = ROT1(c) ^ v;
+				SEND(v);
+			}
+			SEND(c);
+			s++;
+			continue;
+		}
+command:
+		while(1)
+		{
+			if(rx == M_FIN)
+				return true;
+			if(rx == M_ABORT || rx == M_POLL)
+				return false;
+			if((rx & 0xFF000000) == M_SEEK && (rx & 0xFFFFFF) < sections)
+			{
+				s = rx & 0xFFFFFF;
+				fi = fillRunFrom(runs, nruns, s);
+				break;
+			}
+			/* Not a stream word: we armed mid-word and every exchange
+			 * since is shifted. Realign, then wait for a seek. */
+			linkDesyncGuard();
+			do
+				rx = linkXfer(G_SYNC);
+			while(rx == M_SPOLL);
+		}
+	}
+#undef SEND
+}
+
 static void readSave(u32 savesize)
 {
 	switch (savesize){
@@ -268,7 +423,7 @@ static void status(const char *msg)
 int main(void) {
 	consoleDemoInit();
 
-	iprintf("\x1b[2;2HGBA Cart Doctor payload v1.0\n");
+	iprintf("\x1b[2;2HGBA Cart Doctor payload v1.3\n");
 	iprintf("\x1b[3;2H(FIX94's dumper, SIO32 port)\n");
 	iprintf("\x1b[5;2HControlled from the browser -\n");
 	iprintf("\x1b[6;2Hkeep the link cable connected.\n");
@@ -283,6 +438,7 @@ int main(void) {
 	/* Set up waitstates for EEPROM access etc. */
 	REG_WAITCNT = 0x0317;
 
+	cartOpsInit();
 	linkInit();
 
 	while (1) {
@@ -317,6 +473,27 @@ int main(void) {
 			continue;
 		}
 
+		if(cmd == CMD_CART_RUN)
+		{
+			/* Length, then its complement: a torn word can never start
+			 * a transfer. The browser checks our echo of the length. */
+			u32 len = linkXfer(0);
+			u32 chk = linkXfer(len);
+			if(chk != ~len || len == 0 || len > sizeof(save_data)
+				|| (len % SECTION_BYTES))
+				continue;
+			if(!streamFromMaster(save_data, len))
+				continue;
+			linkIdle();
+			u32 words = cartOpsRun(save_data, len, opsResult, OPS_RESULT_WORDS);
+			if(!linkDoneGate())
+				continue;
+			u32 bytes = (words * 4 + SECTION_BYTES - 1) & ~(SECTION_BYTES - 1);
+			linkXfer(bytes);
+			streamToMaster((const u8 *)opsResult, bytes);
+			continue;
+		}
+
 		/* All cart commands re-probe the cartridge — the user may have
 		 * swapped carts since the last operation. */
 		linkIdle();
@@ -325,6 +502,13 @@ int main(void) {
 		s32 gamesize = getGameSize();
 		u32 savesize = (cmd == CMD_DUMP_ROM) ? 0
 			: SaveSize(save_data, gamesize);
+		u32 fillRuns = 0;
+		if(cmd == CMD_DUMP_ROM && gamesize > 0)
+		{
+			status("Scanning ROM...");
+			fillRuns = findFillRuns((u32)gamesize / SECTION_BYTES,
+				(FillRun *)save_data, MAX_FILL_RUNS);
+		}
 
 		if(!linkDoneGate())
 			continue;
@@ -348,7 +532,8 @@ int main(void) {
 		else if(cmd == CMD_DUMP_ROM)
 		{
 			status("Dumping ROM...");
-			if(streamToMaster((const u8*)0x08000000, (u32)gamesize))
+			if(streamRom((u32)gamesize / SECTION_BYTES,
+				(const FillRun *)save_data, fillRuns))
 				status("ROM dump finished.");
 			else
 				status("ROM dump aborted.");

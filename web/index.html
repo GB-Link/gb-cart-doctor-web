@@ -9,7 +9,7 @@
 <body>
     <div class="card">
         <h1>GB-Link Cart Doctor</h1>
-        <p class="subtitle">Dump and restore Game Boy or Game Boy Advance cartridges via GBA multiboot</p>
+        <p class="subtitle">Dump and restore Game Boy or Game Boy Advance cartridges, and write ROMs to GBA flash carts, via GBA multiboot</p>
 
         <div id="browserWarning" class="warning" style="display:none">
             Neither WebUSB nor WebSerial supported in this browser. Use Chrome/Edge or Firefox 151+.
@@ -83,7 +83,7 @@
 
         <div class="section">
             <h2>4. Dump</h2>
-            <p class="hint">Insert your GBA cartridge once the dumper is running, then click "Read Cartridge". Everything is controlled from the browser, and the BIOS dump needs no cartridge at all. A ROM dump runs at roughly 35–40 KB/s (about 2 minutes for 4 MB, 13–15 minutes for 32 MB); saves and the BIOS take seconds.</p>
+            <p class="hint">Insert your GBA cartridge once the dumper is running, then click "Read Cartridge". Everything is controlled from the browser, and the BIOS dump needs no cartridge at all. A ROM dump takes about 1.5 minutes per 4&nbsp;MB of game data; padding and erased space take almost no time. Saves and the BIOS take seconds. ROMs are saved at their own size; on a flash cart that is the file that was written to it, without the erased space after it.</p>
             <div id="gbaCartPanel" class="hint" style="display:none"></div>
             <div class="btn-row">
                 <button id="gbaInfoBtn" class="btn" disabled>Read Cartridge</button>
@@ -100,6 +100,24 @@
             <div class="btn-row">
                 <button id="gbaRestoreBtn" class="btn btn-primary" disabled>Restore Save</button>
                 <button id="gbaEraseBtn" class="btn btn-danger" disabled>Erase Save</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>6. Write a ROM to a flash cart</h2>
+            <p class="hint">For repro ("bootleg") carts and flash carts. Click "Detect Flash Cart" to identify the flash chip, choose a <code>.gba</code> file, then click "Write ROM". Writing takes roughly 2 minutes for 4&nbsp;MB. Parts of the chip that already hold the right data are skipped, so writing the same ROM again (or finishing a cancelled write) is quick. Everything written is read back and checked.</p>
+            <p class="hint"><b>This overwrites the ROM on the cart.</b> Carts that keep their save in the flash chip itself (batteryless saves) may lose it; back the save up first. Saves on a battery-backed chip are not touched.</p>
+            <div id="gbaFlashPanel" class="hint" style="display:none"></div>
+            <label class="field-label" for="gbaFlashProfile">Cart type</label>
+            <select id="gbaFlashProfile" class="select">
+                <option value="">Detect automatically</option>
+            </select>
+            <input type="file" id="gbaFlashFile" accept=".gba,.bin,application/octet-stream">
+            <label class="check-label"><input type="checkbox" id="gbaFlashEraseRest" checked> Erase old data after the ROM</label>
+            <p class="hint">Old data after the ROM, left from a bigger ROM written earlier, is erased too, so a dump of the cart gives back just the new ROM. Untick to keep it, for example a batteryless save stored there. Other games on a multi-game cart are never touched.</p>
+            <div class="btn-row">
+                <button id="gbaFlashDetectBtn" class="btn" disabled>Detect Flash Cart</button>
+                <button id="gbaFlashWriteBtn" class="btn btn-danger" disabled>Write ROM</button>
             </div>
         </div>
         </div>
@@ -125,7 +143,7 @@
             <div id="log" class="log"></div>
         </div>
         <footer class="app-footer">
-            <p>Version: 1.4.0</p>
+            <p>Version: 1.5.5</p>
             <p>
                 Requires <a href="https://github.com/GB-Link/GBLink-Firmware" target="_blank">USB
                     Firmware</a> - <a href="https://github.com/GB-Link/gb-cart-doctor-web" target="_blank">Source</a>
@@ -137,6 +155,8 @@
     <script src="serial_connection.js"></script>
     <script src="multiboot.js"></script>
     <script src="gba_cart.js"></script>
+    <script src="flashcart_profiles.js"></script>
+    <script src="gba_flash.js"></script>
     <script src="dump_receiver.js"></script>
     <script src="dump_receiver_fast.js"></script>
     <script src="restore_sender_fast.js"></script>

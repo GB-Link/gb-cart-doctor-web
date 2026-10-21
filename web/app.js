@@ -16,6 +16,9 @@ let gbaBusy = false;          // a GBA operation is holding the link
 let gbaReady = false;         // payload answered a ping; action buttons live
 let gbaRestoreData = null;    // Uint8Array of a loaded GBA .sav
 let gbaCartInfo = null;       // last readInfo() result (names the downloads)
+let gbaFlasher = null;        // GbaFlashcart while a flash cart operation runs
+let gbaFlashRom = null;       // { name, data } of the ROM to write to a flash cart
+let gbaFlashDetected = null;  // last GbaFlashcart.detect() result
 // The GBA protocol needs 3.3V + 32-bit timing. GB/GBC dumps/restores switch
 // the link to 5V + byte timing, so their entry points clear this flag and the
 // next GBA action reconfigures the link first.
@@ -95,6 +98,10 @@ function updateButtons() {
     document.getElementById("gbaBiosBtn").disabled = gbaActionsOff;
     document.getElementById("gbaEraseBtn").disabled = gbaActionsOff;
     document.getElementById("gbaRestoreBtn").disabled = gbaActionsOff || !gbaRestoreData;
+    document.getElementById("gbaFlashDetectBtn").disabled = gbaActionsOff;
+    document.getElementById("gbaFlashWriteBtn").disabled = gbaActionsOff || !gbaFlashRom;
+    document.getElementById("gbaFlashProfile").disabled = linkBusy;
+    document.getElementById("gbaFlashEraseRest").disabled = linkBusy;
 }
 
 function formatSize(bytes) {
@@ -142,7 +149,9 @@ function resetGbaSession() {
     gbaClient = null;
     gbaReady = false;
     gbaCartInfo = null;
+    gbaFlashDetected = null;
     gbaLinkConfigured = false;
+    document.getElementById("gbaFlashPanel").style.display = "none";
     const panel = document.getElementById("gbaCartPanel");
     if (panel) panel.style.display = "none";
 }
@@ -393,6 +402,7 @@ function cancelDump() {
         log("Cancelling restore...", "error");
     }
     if (gbaBusy && gbaClient) {
+        if (gbaFlasher) gbaFlasher.cancel();
         gbaClient.cancel();
         log("Cancelling GBA operation...", "error");
     }
@@ -701,14 +711,39 @@ async function gbaReadInfo() {
     await runGbaOp("Read cartridge", gbaReadInfoInner);
 }
 
+// A flash cart has no end-of-ROM marker, so the dump covers the whole chip.
+// When the dump ends in erased space (0xFF) reaching back past a power of
+// two, it's a flash cart with room to spare: returns the length up to the
+// last byte that isn't 0xFF. Otherwise (a retail ROM padded with 0xFF up to
+// its chip size) the dump length.
+function trimErasedTail(data) {
+    let end = data.length;
+    while (end > 0 && data[end - 1] === 0xFF) end--;
+    if (end === 0) return data.length;
+    let size = 1;
+    while (size < end) size *= 2;
+    return size < data.length ? end : data.length;
+}
+
 async function gbaDumpRom() {
     await runGbaOp("GBA ROM dump", async () => {
         const t0 = Date.now();
-        const { data } = await gbaClient.dumpRom(gbaProgress("Dumping ROM", t0));
+        let data;
+        try {
+            ({ data } = await gbaClient.dumpRom(gbaProgress("Dumping ROM", t0)));
+        } catch (e) {
+            e.message += olderPayloadHint(e);
+            throw e;
+        }
         // The dump starts with the cart header — recover names for the
         // download even if Read Cartridge was never clicked.
         if (!gbaCartInfo) gbaCartInfo = headerInfoFromBytes(data);
         log(`GBA ROM dump complete: ${formatSize(data.length)} in ${formatTime(Math.floor((Date.now() - t0) / 1000))}.`, "success");
+        const romSize = trimErasedTail(data);
+        if (romSize < data.length) {
+            log(`The last ${formatSize(data.length - romSize)} is erased flash (all 0xFF) — saving the ROM's ${romSize.toLocaleString()} bytes.`);
+            data = data.subarray(0, romSize);
+        }
         setStatus("ROM dump complete");
         document.getElementById("progressText").textContent = "Complete!";
         offerDownload(data, "GBA_ROM");
@@ -784,6 +819,159 @@ function loadGbaRestoreFile(file) {
     reader.readAsArrayBuffer(file);
 }
 
+// ------------------------------------------------------- GBA flash carts
+
+function fillFlashProfileList() {
+    const select = document.getElementById("gbaFlashProfile");
+    if (typeof GbaFlashcart === "undefined" || typeof FLASHCART_PROFILES === "undefined") return;
+    const profiles = GbaFlashcart.flashableProfiles(FLASHCART_PROFILES)
+        .slice().sort((a, b) => a.names[0].localeCompare(b.names[0]));
+    for (const p of profiles) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.names[0];
+        select.appendChild(opt);
+    }
+}
+
+function selectedFlashProfile() {
+    const id = document.getElementById("gbaFlashProfile").value;
+    return id ? FLASHCART_PROFILES.find(p => p.id === id) : null;
+}
+
+function flashSizeText(det) {
+    const listed = det.profile.flash_size, reported = det.cfi && det.cfi.deviceSize;
+    let size = formatSize(listed || reported || 0);
+    if (listed && reported && reported !== listed) {
+        size = `${formatSize(listed)} (the chip reports ${formatSize(reported)})`;
+    }
+    return listed || reported ? size : "size unknown";
+}
+
+function renderFlashPanel(det) {
+    const panel = document.getElementById("gbaFlashPanel");
+    panel.style.display = "block";
+    const id = Array.from(det.flashId.subarray(0, 4), b => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+    let text = `${det.profile.names[0]} — flash ID ${id} — ${flashSizeText(det)}`;
+    if (det.candidates.length > 1) {
+        text += ` (also matches: ${det.candidates.filter(p => p !== det.profile).map(p => p.names[0]).join("; ")})`;
+    }
+    panel.textContent = text; // profile names are data: never innerHTML
+}
+
+// An older dumper on the GBA doesn't know the cart op command: say so.
+function olderPayloadHint(e) {
+    if (e && e.code === "desync" && /handshake/i.test(e.message)) {
+        return " The GBA may be running an older dumper — click \"Send Multiboot\" to load this version.";
+    }
+    return "";
+}
+
+async function gbaFlashDetectInner(flasher) {
+    setStatus("Detecting flash cart...");
+    const det = await flasher.detect();
+    gbaFlashDetected = det;
+    renderFlashPanel(det);
+    log(`Flash cart: ${det.profile.names[0]}, ${flashSizeText(det)} (${det.method}).`, "success");
+    setStatus("Flash cart detected");
+    return det;
+}
+
+async function gbaFlashDetect() {
+    await runGbaOp("Detect flash cart", async () => {
+        gbaFlasher = new GbaFlashcart(gbaClient, { log });
+        try {
+            await gbaFlashDetectInner(gbaFlasher);
+        } catch (e) {
+            gbaFlashDetected = null;
+            if (e.code === "no-flash") {
+                const panel = document.getElementById("gbaFlashPanel");
+                panel.style.display = "block";
+                panel.textContent = e.message;
+            }
+            e.message += olderPayloadHint(e);
+            throw e;
+        } finally {
+            gbaFlasher = null;
+        }
+    });
+}
+
+async function gbaFlashWrite() {
+    if (!gbaFlashRom) return;
+    const manual = selectedFlashProfile();
+    if (!window.confirm(
+        `This will OVERWRITE the ROM on the inserted flash cart with ${gbaFlashRom.name} ` +
+        `(${formatSize(gbaFlashRom.data.length)}). Continue?`)) {
+        return;
+    }
+    await runGbaOp("Flash cart write", async () => {
+        const flasher = new GbaFlashcart(gbaClient, { log });
+        gbaFlasher = flasher;
+        const progressBar = document.getElementById("progressFill");
+        const progressText = document.getElementById("progressText");
+        try {
+            if (!manual) {
+                await gbaFlashDetectInner(flasher);
+            } else {
+                log(`Using the chosen cart type: ${manual.names[0]}`);
+            }
+            const t0 = Date.now();
+            let writeStart = 0;
+            const phases = { compare: "Checking what's already on the cart", erase: "Erasing", write: "Writing ROM" };
+            setStatus("Writing to the flash cart...");
+            const res = await flasher.writeRom(gbaFlashRom.data, {
+                profile: manual || undefined,
+                eraseRest: document.getElementById("gbaFlashEraseRest").checked,
+                onProgress: (done, total, phase) => {
+                    const pct = total ? Math.floor(done / total * 100) : 100;
+                    progressBar.style.width = `${pct}%`;
+                    let eta = "";
+                    if (phase === "write") {
+                        if (!writeStart) writeStart = Date.now();
+                        const elapsed = (Date.now() - writeStart) / 1000;
+                        if (done > 0 && elapsed > 2) eta = ` — ETA: ${formatTime(Math.floor((total - done) / (done / elapsed)))}`;
+                    }
+                    progressText.textContent = `${phases[phase] || phase} — ${pct}%${eta}`;
+                },
+            });
+            const took = formatTime(Math.floor((Date.now() - t0) / 1000));
+            const skipped = res.skipped ? `, ${res.skipped} unchanged sector${res.skipped === 1 ? "" : "s"} skipped` : "";
+            const cleared = res.cleared ? `, ${res.cleared} sector${res.cleared === 1 ? "" : "s"} of old data erased` : "";
+            log(`Flash cart written and verified: ${gbaFlashRom.name} in ${took}${skipped}${cleared}. ` +
+                "Power-cycle the GBA to play.", "success");
+            setStatus("Flash cart write complete");
+            progressBar.style.width = "100%";
+            progressText.textContent = "Write complete!";
+        } catch (e) {
+            if (e.code === "cancelled") {
+                log("The cart now holds a partly written ROM. Write it again to finish — the parts already written are skipped.", "error");
+            } else {
+                e.message += olderPayloadHint(e);
+            }
+            throw e;
+        } finally {
+            gbaFlasher = null;
+        }
+    });
+}
+
+function loadGbaFlashFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+        gbaFlashRom = { name: file.name, data: new Uint8Array(reader.result) };
+        log(`ROM loaded for the flash cart: ${file.name} (${formatSize(gbaFlashRom.data.length)})`);
+        updateButtons();
+    };
+    reader.onerror = () => {
+        log("Failed to read the ROM file.", "error");
+        gbaFlashRom = null;
+        updateButtons();
+    };
+    reader.readAsArrayBuffer(file);
+}
+
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -820,6 +1008,12 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("gbaRestoreFile").addEventListener("change", (e) => {
         loadGbaRestoreFile(e.target.files[0]);
     });
+    document.getElementById("gbaFlashDetectBtn").addEventListener("click", gbaFlashDetect);
+    document.getElementById("gbaFlashWriteBtn").addEventListener("click", gbaFlashWrite);
+    document.getElementById("gbaFlashFile").addEventListener("change", (e) => {
+        loadGbaFlashFile(e.target.files[0]);
+    });
+    fillFlashProfileList();
 
     document.getElementById("modeGbBtn").addEventListener("click", () => setCartMode("gb"));
     document.getElementById("modeGbaBtn").addEventListener("click", () => setCartMode("gba"));

@@ -2,7 +2,8 @@ GB-Link Cart Doctor
 ===================
 
 Dump and restore **Game Boy / Game Boy Color / Game Boy Advance**
-cartridges from the browser. A GBA console is the
+cartridges, and write ROMs to **GBA flash carts** (repros and flash carts),
+from the browser. A GBA console is the
 cartridge reader; a `GBLink USB <https://github.com/GB-Link/GBLink-Firmware>`_
 adapter connects its link port to the PC, and the web app in ``web/`` drives
 everything over WebUSB (or WebSerial on Firefox 151+).
@@ -72,18 +73,70 @@ work from the browser:
 
 - **Read Cartridge** — title, game code, ROM size, save size (save type is
   detected from the ROM's ``EEPROM_V``/``SRAM_V``/``FLASH*_V`` ID strings).
-- **Dump ROM** — saved as ``TITLE [CODE].gba``.
+- **Dump ROM** — saved as ``TITLE [CODE].gba`` at the ROM's own size. On a
+  flash cart that is the file that was written to it, without the erased
+  space after it.
 - **Dump Save / Restore Save / Erase Save** — EEPROM 512 B/8 KB, SRAM 32 KB,
   Flash 64/128 KB.
 - **Dump BIOS** — the 16 KB console BIOS (Dark Fader's ``MidiKey2Freq``
   method); no cartridge needed.
 
 The whole GBA session runs at **3.3V** with the same 32-bit timing multiboot
-uses — no voltage switching involved. Throughput is bounded by the USB round
-trip at roughly 35–40 KB/s: about 2 minutes for a 4 MB ROM, 13–15 minutes for
-32 MB; saves and the BIOS take seconds. EEPROM save detection reads the
-EEPROM itself, so **Read Cartridge** can take a few extra seconds on EEPROM
-games.
+uses — no voltage switching involved. A ROM dump takes about 1.5 minutes per
+4 MB of game data; padding and erased space take almost no time. Saves and
+the BIOS take seconds. EEPROM save detection reads the EEPROM itself, so
+**Read Cartridge** can take a few extra seconds on EEPROM games.
+
+Writing ROMs to GBA flash carts
+-------------------------------
+
+Repro ("bootleg") carts and flash carts can be rewritten with a ROM of your
+choice, from the same GBA workflow:
+
+1. Send the multiboot as above and insert the flash cart.
+2. Click **Detect Flash Cart**. The page names the cart type, its flash ID
+   and size. If more than one cart type shares that flash ID, the others are
+   listed too. If the chip reports more memory than its cart type lists, both
+   sizes are shown and the chip's is used.
+3. Choose a ``.gba`` file and click **Write ROM**. Wait for *Flash cart
+   written and verified*, then power-cycle the GBA to play.
+
+Writing takes roughly 2 minutes for 4 MB. Parts of the chip that already
+hold the right data are skipped, so writing the same ROM again (or finishing
+a cancelled write) is quick. Everything written is read back and checked. A
+ROM bigger than the chip is refused before anything is erased.
+
+Old data after the ROM, left from a bigger ROM written earlier, is erased
+too, so a dump of the cart gives back just the new ROM. Untick **Erase old
+data after the ROM** to keep it, for example a batteryless save stored
+there. Other games on a multi-game cart are never touched.
+
+Supported carts:
+
+- every GBA flash cart type `FlashGBX <https://github.com/Lesserkuma/FlashGBX>`_
+  knows that a GBA can drive: AMD-, Intel- and Sharp-style chips, single-word
+  and buffered writing, chips with swapped data lines, two-chip
+  Flash2Advance carts, carts with two 8-bit dies, and multi-game carts bigger
+  than 32 MB that switch banks;
+- carts none of those match: the page then scans for the chip the way
+  `Burn2Slot <https://github.com/vrodin/Burn2Slot>`_ does, trying six
+  data-line wirings and six command layouts for AMD-style chips, and also
+  checking for Intel-style chips.
+
+If detection picks the wrong type, choose one from the **Cart type** list;
+the write then uses it as given.
+
+Things to know:
+
+- Carts that keep their save in the flash chip itself ("batteryless" saves)
+  may lose it when the ROM is rewritten. Back the save up first. Saves on a
+  battery-backed chip are not touched.
+- Writing to GB/GBC flash carts is not supported yet.
+- A cart with a flash chip none of the profiles or the scan recognise is
+  reported as "No writable flash chip found", together with the flash IDs
+  the cart answered with.
+- A ROM file that ends in 0xFF bytes dumps back without them. The game plays
+  the same, because the cart reads 0xFF there anyway.
 
 Restoring and erasing saves
 ===========================
@@ -138,6 +191,17 @@ hardware needed)::
 
     node web/test/gba_protocol_sim.mjs
 
+**Flash cart test** — writes ROMs end to end to simulated flash chips (one
+per kind of cart above), using the payload's real cart code compiled for the
+PC. Needs a C compiler::
+
+    node web/test/flashcart_test.mjs
+
+**Flash cart profiles** — ``web/flashcart_profiles.js`` is generated from a
+FlashGBX checkout; re-run this to pick up new carts::
+
+    python3 tools/import_flashgbx.py ../FlashGBX
+
 Technical details
 =================
 
@@ -168,8 +232,11 @@ the cartridge it is un-armed and the host reads a constant ``0xFFFFFFFF``.
 Commands use an echo-confirm handshake (command → bitwise-NOT echo → GO), and
 slow phases end with a DONE gate the host must acknowledge. Bulk data moves
 in 256-byte sections closed by an XOR32 checksum and a verdict word, re-sent
-on mismatch (the original Wii protocol had no integrity checking). The
-simulation test above models the payload state machine word for word.
+on mismatch (the original Wii protocol had no integrity checking). ROM dumps
+instead stream numbered, checksummed records with no per-section reply; a
+run of identical sections goes as one short record, and the host asks for a
+resend from the first bad or missing record. The simulation test above
+models the payload state machine word for word.
 
 Credits
 =======
@@ -194,3 +261,12 @@ GBA cartridge support is ported from `wii-gba-link-cable-dumper
 - Chishm, the cartridge save routines (SendSave / libSave).
 
 - Dark Fader, the GBA BIOS dump method.
+
+GBA flash cart writing uses:
+
+- Lesserkuma's `FlashGBX <https://github.com/Lesserkuma/FlashGBX>`_ (GPL-3.0):
+  the flash cart profiles, flash detection and CFI handling.
+
+- vrodin's `Burn2Slot <https://github.com/vrodin/Burn2Slot>`_ (MIT): the
+  flash chip scan for carts no profile matches, by way of the Burn2Slot for
+  GB-Link port.

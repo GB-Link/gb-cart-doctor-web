@@ -46,6 +46,73 @@ function* streamToMaster(words) {
     return true;
 }
 
+// streamRom + findFillRuns in main.c
+function fillRuns(words) {
+    const runs = [];
+    for (let s = 0; s < words.length / 64; s++) {
+        const v = words[s * 64];
+        let w = 1;
+        while (w < 64 && words[s * 64 + w] === v) w++;
+        if (w < 64) continue;
+        const last = runs[runs.length - 1];
+        if (last && last.value === v && last.start + last.count === s) last.count++;
+        else runs.push({ start: s, count: 1, value: v });
+    }
+    return runs;
+}
+
+const rotl1 = (c) => ((c << 1) | (c >>> 31)) >>> 0;
+
+function* streamRom(words, guardPolls) {
+    const sections = words.length / 64;
+    const runs = fillRuns(words);
+    let s = 0, fi = 0;
+    while (true) {
+        let record;
+        if (s >= sections) {
+            record = [(C.R_END << 24 | sections) >>> 0];
+        } else if (fi < runs.length && runs[fi].start === s) {
+            const r = runs[fi];
+            const h = (C.R_FILL << 24 | s) >>> 0;
+            record = [h, r.value, r.count, (rotl1((rotl1(h) ^ r.value) >>> 0) ^ r.count) >>> 0];
+        } else {
+            const h = (C.R_DATA << 24 | s) >>> 0;
+            let c = h;
+            record = [h];
+            for (let w = 0; w < 64; w++) {
+                const v = words[s * 64 + w];
+                c = (rotl1(c) ^ v) >>> 0;
+                record.push(v);
+            }
+            record.push(c);
+        }
+        let rx = C.M_SPOLL;
+        for (const w of record) {
+            rx = (yield w) >>> 0;
+            if (rx !== C.M_SPOLL) break;
+        }
+        if (rx === C.M_SPOLL) {
+            if (s < sections) {
+                if (fi < runs.length && runs[fi].start === s) s += runs[fi++].count;
+                else s++;
+            }
+            continue;
+        }
+        while (true) {
+            if (rx === C.M_FIN) return true;
+            if (rx === C.M_ABORT || rx === C.M_POLL) return false;
+            if (((rx & 0xFF000000) >>> 0) === C.M_SEEK && (rx & 0xFFFFFF) < sections) {
+                s = rx & 0xFFFFFF;
+                fi = runs.findIndex((r) => r.start >= s);
+                if (fi < 0) fi = runs.length;
+                break;
+            }
+            yield { busy: guardPolls };
+            do rx = (yield C.G_SYNC) >>> 0; while (rx === C.M_SPOLL);
+        }
+    }
+}
+
 function* streamFromMaster(totalBytes) {
     const out = new Uint8Array(totalBytes);
     const dv = new DataView(out.buffer);
@@ -76,9 +143,26 @@ function* payloadProgram(env) {
         let rx = yield C.G_READY;
         if (((rx & 0xFFFF0000) >>> 0) !== C.M_MAGIC) continue;
         const cmd = rx & 0xFFFF;
-        if (cmd === 0 || cmd > C.CMD_INFO) continue;
+        if (cmd === 0 || cmd > C.CMD_CART_RUN) continue;
         rx = yield echoWord(cmd);
         if (rx !== C.M_GO) continue;
+
+        if (cmd === C.CMD_CART_RUN) {
+            const len = (yield 0) >>> 0;
+            const chk = (yield len) >>> 0;
+            if (chk !== (~len >>> 0) || len === 0 || len > 0x20000 || len % 0x100) continue;
+            const prog = yield* streamFromMaster(len);
+            if (prog === null) continue;
+            yield { busy: env.runBusyPolls };
+            const result = env.runOps(prog);
+            if (!(yield* doneGate())) continue;
+            const bytes = (result.length * 4 + 0xFF) & ~0xFF;
+            yield bytes;
+            const padded = new Uint32Array(bytes / 4);
+            padded.set(result);
+            yield* streamToMaster(padded);
+            continue;
+        }
 
         if (cmd === C.CMD_DUMP_BIOS) {
             yield { busy: env.biosBusyPolls };
@@ -98,7 +182,7 @@ function* payloadProgram(env) {
         if (cmd === C.CMD_INFO) {
             for (let i = 0; i < 48; i++) yield env.romWord(i * 4);
         } else if (cmd === C.CMD_DUMP_ROM) {
-            yield* streamToMaster(env.romWordsAll());
+            yield* streamRom(env.romWordsAll(), env.guardPolls);
         } else if (cmd === C.CMD_DUMP_SAVE) {
             if (savesize === 0) continue;
             yield { busy: env.saveReadBusyPolls };
@@ -156,6 +240,13 @@ class FakeUsb {
         this.exchanges = 0;
         this.corruptRxAt = opts.corruptRxAt ?? -1; // flip a GBA->host word once
         this.corruptTxAt = opts.corruptTxAt ?? -1; // flip a host->GBA word once
+        this.corruptRxEvery = opts.corruptRxEvery ?? 0; // ... and periodically
+        this.corruptTxEvery = opts.corruptTxEvery ?? 0;
+        this.dropEvery = opts.dropEvery ?? 0;     // payload not armed in time
+        this.from = opts.from ?? 0;               // periodic faults start here
+    }
+    periodic(every) {
+        return every > 0 && this.exchanges > this.from && this.exchanges % every === 0;
     }
     async writeBytes(tx) {
         assert.equal(tx.length % 4, 0, "non-word-aligned write");
@@ -163,9 +254,13 @@ class FakeUsb {
         for (let i = 0; i < tx.length; i += 4) {
             this.exchanges++;
             let w = ((tx[i] << 24) | (tx[i + 1] << 16) | (tx[i + 2] << 8) | tx[i + 3]) >>> 0;
-            if (this.exchanges === this.corruptTxAt) w = (w ^ 0x00400000) >>> 0;
-            let r = this.gba.exchange(w) >>> 0;
-            if (this.exchanges === this.corruptRxAt) r = (r ^ 0x00010000) >>> 0;
+            if (this.exchanges === this.corruptTxAt || this.periodic(this.corruptTxEvery)) {
+                w = (w ^ 0x00400000) >>> 0;
+            }
+            let r = this.periodic(this.dropEvery) ? BUSY_WORD : this.gba.exchange(w) >>> 0;
+            if (this.exchanges === this.corruptRxAt || this.periodic(this.corruptRxEvery)) {
+                r = (r ^ 0x00010000) >>> 0;
+            }
             this.rxQueue.push((r >>> 24) & 0xFF, (r >>> 16) & 0xFF, (r >>> 8) & 0xFF, r & 0xFF);
         }
     }
@@ -178,10 +273,11 @@ class FakeUsb {
 // Cart environments
 // ---------------------------------------------------------------------------
 
-function makeEnv({ romMB = 1, savesize = 0x8000, title = "TESTGAME", code = "ABCD", maker = "01" } = {}) {
+function makeEnv({ romMB = 1, savesize = 0x8000, title = "TESTGAME", code = "ABCD", maker = "01", fills = [] } = {}) {
     const romBytes = romMB > 0 ? romMB * 1024 * 1024 : 0;
     const rom = new Uint8Array(Math.max(romBytes, 0xC0));
     for (let i = 0; i < rom.length; i++) rom[i] = (i * 7 + 13) & 0xFF;
+    for (const [at, len, value] of fills) rom.fill(value, at, at + len);
     const put = (s, at) => { for (let i = 0; i < s.length; i++) rom[at + i] = s.charCodeAt(i); };
     if (romBytes > 0) {
         rom.fill(0, 0xA0, 0xC0);
@@ -208,6 +304,7 @@ function makeEnv({ romMB = 1, savesize = 0x8000, title = "TESTGAME", code = "ABC
         rom, save, bios,
         committed: null,
         probeBusyPolls: 3,
+        guardPolls: 2,
         saveReadBusyPolls: 3,
         saveWriteBusyPolls: 4,
         biosBusyPolls: 2,
@@ -218,6 +315,16 @@ function makeEnv({ romMB = 1, savesize = 0x8000, title = "TESTGAME", code = "ABC
         saveWords: function () { return wordsOf(this.save); },
         biosWords: () => wordsOf(bios),
         commitSave: function (data) { this.committed = data; this.save = data.slice(); },
+        runBusyPolls: 3,
+        runs: [],
+        // Stand-in for cartops.c: [executed, status, sum of the buffer's words, length]
+        runOps: function (prog) {
+            this.runs.push(prog);
+            const w = wordsOf(prog);
+            let sum = 0;
+            for (const v of w) sum = (sum + v) >>> 0;
+            return Uint32Array.of(1, 0, sum, prog.length);
+        },
     };
 }
 
@@ -347,6 +454,51 @@ test("cancel mid-dump aborts, payload recovers to idle", async () => {
     assert.equal(info.title, "TESTGAME");
 });
 
+function opBuffer(bytes, seed) {
+    const b = new Uint8Array(bytes);
+    for (let i = 0; i < b.length; i++) b[i] = (i * seed + 7) & 0xFF;
+    return b;
+}
+function wordSum(b) {
+    const dv = new DataView(b.buffer);
+    let s = 0;
+    for (let i = 0; i < b.length; i += 4) s = (s + dv.getUint32(i, true)) >>> 0;
+    return s;
+}
+
+test("runOps delivers the buffer byte-exact and returns the result words", async () => {
+    const env = makeEnv({});
+    const { client } = makeClient(env);
+    const buf = opBuffer(0x1300, 3);
+    const words = await client.runOps(buf);
+    assert.equal(words.length, 64);   // padded to one section
+    assert.equal(words[2], wordSum(buf));
+    assert.equal(words[3], buf.length);
+    assert.deepEqual(env.runs[0], buf);
+});
+
+test("runOps survives an upload corruption via resend", async () => {
+    const env = makeEnv({});
+    const { client } = makeClient(env, { corruptTxAt: 40 });
+    const buf = opBuffer(0x400, 5);
+    const words = await client.runOps(buf);
+    assert.equal(words[2], wordSum(buf));
+    assert.deepEqual(env.runs[0], buf);
+});
+
+test("runOps rejects a torn length without running anything", async () => {
+    const env = makeEnv({});
+    const { client, usb } = makeClient(env);
+    await client.ping();
+    // corrupt the length word: the 3rd exchange after the 2 handshake words
+    usb.corruptTxAt = usb.exchanges + 4;
+    await assert.rejects(client.runOps(opBuffer(0x100, 9)), (e) => e.code === "desync");
+    assert.equal(env.runs.length, 0);
+    const words = await client.runOps(opBuffer(0x100, 9));
+    assert.equal(env.runs.length, 1);
+    assert.equal(words[3], 0x100);
+});
+
 test("stale DONE gate is kicked by the next operation", async () => {
     const env = makeEnv({ savesize: 0x200 });
     const { client, gba } = makeClient(env);
@@ -358,6 +510,62 @@ test("stale DONE gate is kicked by the next operation", async () => {
     // Payload is now re-arming G_DONE forever. A fresh operation must recover.
     const info = await client.readInfo();
     assert.equal(info.noCart, false);
+});
+
+// A 4 MB repro-style image: 1 MB of game, a zero-padded hole, and an erased
+// (0xFF) tail, plus a lone uniform section and a short non-uniform gap.
+const PADDED = {
+    romMB: 4,
+    fills: [[0x80000, 0x100, 0x00], [0x100000, 0x10000, 0x00], [0x110000, 0x2F0000, 0xFF],
+        [0x200000, 0x80, 0x12]],
+};
+
+test("dumpRom sends uniform runs as fill records", async () => {
+    const env = makeEnv(PADDED);
+    const { client, usb } = makeClient(env);
+    let last = 0;
+    const { data } = await client.dumpRom((done) => { last = done; });
+    assert.deepEqual(data, env.rom);
+    assert.equal(last, env.rom.length);
+    // ~1.1 MB of data records out of 4 MB
+    assert.ok(usb.exchanges < env.rom.length / 4 * 0.3, `${usb.exchanges} exchanges`);
+});
+
+test("dumpRom stays byte-exact through periodic reply corruption", async () => {
+    const env = makeEnv(PADDED);
+    const { client } = makeClient(env, { corruptRxEvery: 997, from: 20 });
+    const { data } = await client.dumpRom(() => {});
+    assert.deepEqual(data, env.rom);
+});
+
+test("dumpRom resyncs when the payload misreads a poll", async () => {
+    const env = makeEnv(PADDED);
+    const { client } = makeClient(env, { corruptTxEvery: 1499, from: 20 });
+    const { data } = await client.dumpRom(() => {});
+    assert.deepEqual(data, env.rom);
+});
+
+test("dumpRom recovers from words the payload missed", async () => {
+    const env = makeEnv(PADDED);
+    const { client } = makeClient(env, { dropEvery: 1201, from: 20 });
+    const { data } = await client.dumpRom(() => {});
+    assert.deepEqual(data, env.rom);
+    const info = await client.readInfo();
+    assert.equal(info.title, "TESTGAME");
+});
+
+test("an abandoned ROM stream is aborted by the next operation", async () => {
+    const env = makeEnv({ romMB: 1 });
+    const { client, gba } = makeClient(env);
+    gba.exchange(C.M_MAGIC | C.CMD_DUMP_ROM);
+    gba.exchange(C.M_GO);
+    for (let i = 0; i < 10; i++) gba.exchange(C.M_POLL);  // probe busy
+    gba.exchange(C.M_CONT);                                 // leave the gate
+    for (let i = 0; i < 100; i++) gba.exchange(C.M_SPOLL); // mid-stream...
+    const info = await client.readInfo();                  // ...page reloaded
+    assert.equal(info.title, "TESTGAME");
+    const { data } = await client.dumpRom(() => {});
+    assert.deepEqual(data, env.rom);
 });
 
 const failures = [];
