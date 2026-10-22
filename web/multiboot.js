@@ -1,6 +1,7 @@
 /**
- * GBA Multiboot Implementation for WebUSB
- * Supports both old (reconfigurable) and new (GBLink unified) firmware.
+ * Sends a program to a GBA over the link cable (multiboot), the same way a
+ * second GBA would. Works with both the old (reconfigurable) and the new
+ * (unified) GB-Link firmware.
  */
 
 function delay(ms) {
@@ -36,9 +37,9 @@ async function Spi32(usb, val) {
 }
 
 /**
- * Send multiple 32-bit SPI words in a single USB transfer.
- * The firmware processes them as sequential 4-byte SPI exchanges
- * and returns all results at once, drastically reducing USB round-trips.
+ * Send several 32-bit words in one USB transfer. The GB-Link clocks them out
+ * one after another and returns all the replies together, which saves a USB
+ * round trip per word.
  */
 async function Spi32Batch(usb, values) {
     const count = values.length;
@@ -52,7 +53,7 @@ async function Spi32Batch(usb, values) {
     }
     await usb.writeBytes(txBatch);
 
-    // Accumulate reads — firmware may split response across multiple USB packets
+    // The reply can arrive split over several USB packets.
     const expectedBytes = count * 4;
     const chunks = [];
     let totalReceived = 0;
@@ -63,7 +64,6 @@ async function Spi32Batch(usb, values) {
         totalReceived += chunk.length;
     }
 
-    // Merge chunks into single buffer
     const rxBatch = new Uint8Array(totalReceived);
     let offset = 0;
     for (const chunk of chunks) {
@@ -79,8 +79,8 @@ async function Spi32Batch(usb, values) {
     return results;
 }
 
-// Max words per USB batch. Keep below 64 bytes (USB endpoint maxPacketSize)
-// 14 words × 4 bytes = 56 bytes per batch (safe, avoids 64-byte ZLP).
+// Most words per USB batch: 14 × 4 = 56 bytes. Staying under the 64-byte USB
+// packet size avoids the extra empty packet a full 64-byte write needs.
 const BATCH_WORDS = 14;
 
 async function multiboot(usb, romData, log = console.log) {
@@ -94,32 +94,29 @@ async function multiboot(usb, romData, log = console.log) {
 
     log(`ROM size: ${fsize} bytes (${(fsize / 1024).toFixed(1)} KB)`);
 
-    // Pad data
     const paddedData = new Uint8Array(fsize + 0x10);
     paddedData.set(fdata);
 
-    // Configure firmware for GBA multiboot
     log("Configuring firmware for GBA multiboot...");
 
     if (usb.isNewFirmware) {
-        // New firmware: set GB Link mode, then configure timing for 32-bit transfers
+        // New firmware: switch to GB Link mode before setting the timing.
         await usb.setMode(MODE.GB_LINK);
-        await delay(100); // Give firmware time to switch mode
+        await delay(100); // give the firmware time to switch
     }
 
-    // Configure timing: 36µs between transfers, 4 bytes per transfer (32-bit SPI)
+    // 36 µs between transfers, 4 bytes (one 32-bit word) per transfer.
     await usb.setTimingConfig(36, 4);
 
-    // Old firmware: drain stale data (the config magic packet triggers a SPI exchange,
-    // so the firmware sends bytes back on the data endpoint that must be consumed).
-    // New firmware: skip this — timing config goes to the command endpoint and produces
-    // no data-endpoint response. A transferIn that times out leaves a stale pending read
-    // at the WebUSB level that silently consumes the first real SPI response.
+    // Old firmware sends the timing setup over the data channel, and the reply
+    // to it has to be read and thrown away. New firmware takes it on the
+    // command channel and sends nothing back. Reading anyway would leave an
+    // unfinished USB read waiting, and that read would swallow the GBA's
+    // first real reply.
     if (!usb.isNewFirmware) {
         await readAll(usb);
     }
 
-    // Wait for GBA
     log("Waiting for GBA... Turn on your GBA with the link cable connected.");
 
     let recv, attempts = 0;
@@ -136,10 +133,9 @@ async function multiboot(usb, romData, log = console.log) {
 
     log("GBA detected! Starting transfer...", "success");
 
-    // Handshake
     await Spi32(usb, 0x6102);
 
-    // Send header (0x00–0xC0) in batches
+    // Send the ROM header (the first 0xC0 bytes) unencrypted, 16 bits at a time.
     const headerWords = [];
     for (let i = 0; i < 0xC0; i += 2) {
         headerWords.push(paddedData[i] | (paddedData[i + 1] << 8));
@@ -159,7 +155,7 @@ async function multiboot(usb, romData, log = console.log) {
 
     log("Handshake successful!", "success");
 
-    // CRC setup
+    // Agree on the encryption seed and checksum values with the GBA BIOS.
     let crcA = (token >>> 16) & 0xFF;
     let seed = (0xFFFF00D1 | (crcA << 8)) >>> 0;
     crcA = (crcA + 0x0F) & 0xFF;
@@ -175,24 +171,22 @@ async function multiboot(usb, romData, log = console.log) {
 
     log(`Sending data (${fsize} bytes)...`);
 
-    // Bulk data transfer (0xC0–fsize) in batches
+    // Send the rest of the program, encrypted, a batch at a time.
     let lastProgress = -1;
     for (let i = 0xC0; i < fsize;) {
         const wordsInBatch = Math.min(BATCH_WORDS, (fsize - i) / 4);
         const batchValues = [];
 
-        // Pre-compute all encrypted words for this batch
         for (let w = 0; w < wordsInBatch; w++) {
             const offset = i + w * 4;
 
-            // Read 32-bit little-endian
             let dat = paddedData[offset] |
                 (paddedData[offset + 1] << 8) |
                 (paddedData[offset + 2] << 16) |
                 ((paddedData[offset + 3] << 24) >>> 0);
             dat = dat >>> 0;
 
-            // CRC step
+            // Fold the word into the checksum the BIOS checks at the end.
             let tmp = dat;
             for (let b = 0; b < 32; b++) {
                 const bit = (crcC ^ tmp) & 1;
@@ -200,21 +194,21 @@ async function multiboot(usb, romData, log = console.log) {
                 tmp = tmp >>> 1;
             }
 
-            // Encrypt step - use BigInt to avoid precision loss!
+            // Encrypt it. The multiply needs BigInt: the product doesn't fit
+            // in a JavaScript number exactly.
             seed = Number((BigInt(seed) * 0x6F646573n + 1n) & 0xFFFFFFFFn);
             dat = (seed ^ dat ^ ((0xFE000000 - offset) >>> 0) ^ 0x43202F2F) >>> 0;
 
             batchValues.push(dat);
         }
 
-        // Send batch and read all responses
         const responses = await Spi32Batch(usb, batchValues);
         if (!responses) {
             log(`Read timeout during batch transfer at byte ${i}`, "error");
             return false;
         }
 
-        // Verify each response
+        // The GBA answers each word with the low 16 bits of its offset.
         for (let w = 0; w < wordsInBatch; w++) {
             const offset = i + w * 4;
             const chk = (responses[w] >>> 16) & 0xFFFF;
@@ -226,7 +220,6 @@ async function multiboot(usb, romData, log = console.log) {
 
         i += wordsInBatch * 4;
 
-        // Progress
         const progress = Math.floor(((i - 0xC0) / (fsize - 0xC0)) * 10);
         if (progress > lastProgress) {
             log(`Progress: ${progress * 10}%`, "info");
@@ -236,7 +229,7 @@ async function multiboot(usb, romData, log = console.log) {
 
     log("Data sent successfully!", "success");
 
-    // Final CRC
+    // Finish the checksum with the handshake values.
     let tmp = ((0xFFFF0000 | (crcB << 8) | crcA) >>> 0);
     for (let b = 0; b < 32; b++) {
         const bit = (crcC ^ tmp) & 1;
@@ -244,7 +237,7 @@ async function multiboot(usb, romData, log = console.log) {
         tmp = tmp >>> 1;
     }
 
-    // Acknowledgment
+    // Tell the GBA we're done, wait for it to agree, then send the checksum.
     log("Waiting for GBA acknowledgment...");
     await Spi32(usb, 0x0065);
 

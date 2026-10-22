@@ -1,21 +1,21 @@
 /*
- * Native flash cart simulator for the GBA payload's cart op interpreter.
+ * A simulated GBA flash cart, for testing flash writing on a PC.
  *
- * Runs the real source/gba_cart_dumper/source/cartops.c against simulated
- * NOR flash chips so the browser's flash cart code (web/gba_flash.js) can be
- * tested end to end without hardware. Chip behaviour modelled:
- *   - AMD-style: unlock cycles at configurable addresses, autoselect IDs,
- *     CFI, sector/chip erase, single-word and write-buffer programming, data
- *     polling (DQ7 inverted, DQ6 toggling) while busy, DQ5 on a failed
- *     program (bits can only be cleared), write-buffer abort.
- *   - Intel/Sharp-style: read array/ID/CFI/status modes, block lock bits,
- *     block erase, word and buffered programming, status register.
- *   - Cart wiring: swapped data lines (D0/D1, D6/D7, Burn2Slot's two full
- *     permutations), two 8-bit dies on the two byte lanes ("double die"),
- *     two interleaved chips (Flash2Advance), and 32 MB banks selected
+ * Runs the dumper's real cart operations (source/gba_cart_dumper/source/
+ * cartops.c) against simulated NOR flash chips, so the page's flash cart code
+ * (web/gba_flash.js) can be tested end to end without hardware. It models:
+ *   - AMD-style chips: unlock cycles at configurable addresses, ID mode,
+ *     CFI, sector and chip erase, single-word and write-buffer programming,
+ *     status reads while busy (bit 7 inverted, bit 6 toggling), and bit 5
+ *     set when a program fails (bits can only go from 1 to 0).
+ *   - Intel/Sharp-style chips: read, ID, CFI and status modes, block lock
+ *     bits, block erase, word and buffered programming, status register.
+ *   - Cart wiring: swapped data lines (D0/D1, D6/D7, and Burn2Slot's two
+ *     full reorderings), two 8-bit chips sharing the 16-bit bus ("double
+ *     die"), two interleaved chips (Flash2Advance), and 32 MB banks selected
  *     through SRAM registers.
  *
- * Usage: flashsim key=value ... (see parseArgs). Requests on stdin:
+ * Usage: flashsim key=value ... (the keys are in parseArgs). Requests on stdin:
  *   'R' u32 len, bytes   -> u32 words, words   (run an op buffer)
  *   'D' u32 off, u32 len -> bytes               (linear cart image, banks
  *                                                 concatenated, as the GBA reads it)
@@ -80,6 +80,7 @@ static long sProg, sBuf, sErase, sChip, sErrors, sOverprog;
 static unsigned long tickCalls;
 
 /* ------------------------------------------------------------ data wiring */
+/* Burn2Slot's two data line orders: chip pin i is wired to GBA line BUSn[i]. */
 static const u8 BUS1[] = {15, 7, 14, 6, 13, 5, 12, 4, 0, 8, 1, 9, 2, 10, 3, 11};
 static const u8 BUS2[] = {0, 8, 1, 9, 6, 14, 7, 15, 2, 10, 3, 11, 4, 12, 5, 13};
 
@@ -141,6 +142,7 @@ static int sectorIndex(u32 w)
 
 static int log2u(u32 v) { int n = 0; while ((1u << n) < v) n++; return n; }
 
+/* The chip's CFI (Common Flash Interface) table, one word per address. */
 static u16 cfiWord(u32 w)
 {
 	const u32 big = cfgS.sector;
@@ -165,8 +167,9 @@ static u16 cfiWord(u32 w)
 	case 0x2C: return boot ? 2 : 1;
 	}
 	if (w >= 0x2D && w < 0x35) {
-		/* AMD lists the boot region first even on top-boot parts (the PRI
-		 * boot flag says to reverse); Intel lists in address order. */
+		/* AMD chips list the boot sectors first even when they sit at the
+		 * top, and a flag in the extended table says to reverse the list.
+		 * Intel chips list regions in address order. */
 		u32 r = (w - 0x2D) / 4, k = (w - 0x2D) % 4;
 		u32 count, size;
 		int smallFirst = boot && (cfgS.type == AMD || cfgS.bootBottom);
@@ -187,13 +190,15 @@ static u16 cfiWord(u32 w)
 }
 
 /* ------------------------------------------------------------ AMD model */
+/* Programming can only turn bits from 1 to 0. Asking for more fails the way
+ * a real chip does: it reports an error until it is reset. */
 static void amdProgram(Chip *c, u32 w, u16 v, int busy)
 {
 	u16 old = c->mem[w];
 	c->mem[w] = old & v;
 	if ((old & v) != v) {
 		sOverprog++;
-		c->st = A_FAULT; /* DQ5: needs a reset */
+		c->st = A_FAULT;
 		c->busyData = v;
 		return;
 	}
@@ -311,8 +316,8 @@ static u16 amdRead(Chip *c, u32 w)
 		return (u16)(dq7 | c->toggle);
 	}
 	if (c->st == A_AUTO) {
-		/* idshift: the ID words repeat, as on carts wiring the GBA's A1
-		 * to the chip's A0 */
+		/* With idshift each ID word appears twice, as on carts that wire
+		 * the GBA's address line A1 to the chip's A0. */
 		switch (cfgS.idShift ? (w & 0xFF) >> 1 : w & 0xFF) {
 		case 0: return cfgS.mfr;
 		case 1: return cfgS.dev;
@@ -409,7 +414,7 @@ static u16 intelRead(Chip *c, u32 w)
 	case I_ID: return (w & 0xFF) == 0 ? cfgS.mfr : (w & 0xFF) == 1 ? cfgS.dev : 0;
 	case I_CFI: return cfiWord(w & 0xFF);
 	case I_ARRAY: return c->mem[w];
-	case I_BCOUNT: return 0x80; /* XSR: buffer available */
+	case I_BCOUNT: return 0x80; /* the write buffer is free */
 	default:
 		if (c->busy) { c->busy--; return c->sr; }
 		return (u16)(c->sr | 0x80);
@@ -474,11 +479,14 @@ u8 sim_sram_rd(u32 a) { return sram[a & 0xFFFF]; }
 void sim_sram_wr(u32 a, u8 v)
 {
 	sram[a & 0xFFFF] = v;
-	/* FlashGBX bank select type 1: bank << 4 at 2, then 0x40 at 3, 0 at 4 */
+	/* Banks switch the way FlashGBX's bank type 1 does it: the bank number
+	 * times 16 goes to SRAM byte 2, then 0x40 to byte 3 and 0 to byte 4. The
+	 * switch takes effect on the write to byte 4. */
 	if (cfgS.banks > 1 && (a & 0xFFFF) == 4)
 		bank = (sram[2] >> 4) % cfgS.banks;
 }
 
+/* A clock for the timeouts in cartops.c: one tick every 8 reads of it. */
 u32 sim_ticks(void) { return (u32)(tickCalls++ / 8); }
 
 /* -------------------------------------------------------------- harness */

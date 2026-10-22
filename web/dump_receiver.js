@@ -1,23 +1,24 @@
 /**
- * GBC Cart Dump Receiver — WebUSB port of dump_reader.py
+ * Receives a dump from the original, slower GBC payload (a browser version
+ * of dump_reader.py).
  *
- * Protocol: The GBA multiboot payload switches the GBA to GBC mode,
- * then dumps the inserted GB/GBC cartridge over the link cable.
- * Data is sent as pairs of nybbles (4-bit values) with echo verification.
+ * The GBA switches itself to GBC mode and sends the GB/GBC cartridge over the
+ * link cable. Each byte travels as two 4-bit halves, and the page sends each
+ * half back so the GBC can check it arrived intact.
  */
 
 const ROM_TRANSFER_VAL = 1;
 const SRAM_TRANSFER_VAL = 2;
-const ROM_BANK_SIZE = 0x40;    // 64 sections per bank (256 bytes each = 16KB)
-const SECTION_SIZE = 0x100;     // 256 bytes per section
+const ROM_BANK_SIZE = 0x40;    // sections per 16 KB ROM bank
+const SECTION_SIZE = 0x100;     // bytes per section
 const NORMAL_NYBBLE = 0x10;
 const CHECK_NYBBLE = 0x40;
 
-// Cart header byte → number of ROM banks
+// ROM size code (cartridge header byte $0148) to number of ROM banks
 const ROM_BANKS = [2,4,8,16,32,64,128,256,512,0,0,0,0,0,0,0,0,0,72,80,96];
-// SRAM type → sections per bank
+// RAM size code (header byte $0149) to sections per bank
 const SRAM_BANK_SIZES = [0,8,0x20,0x20,0x20,0x20,2];
-// SRAM type → number of banks
+// RAM size code to number of banks
 const SRAM_BANKS = [0,1,1,4,16,8,1];
 
 class DumpReceiver {
@@ -89,9 +90,9 @@ class DumpReceiver {
         const header = await this.readSection(data);
         if (!header || this.cancelled) return null;
 
-        // Strip leading zeros — the adapter clocks SPI while waiting for the user
-        // to press dump on the GBA, accumulating 0x00 bytes (from SB=0x10 init value).
-        // Real header starts with transfer type (1=ROM, 2=SRAM), never 0.
+        // Drop leading zeros: they are what the GBC sent while waiting for a
+        // button press. The real header starts with the transfer type
+        // (1 = ROM, 2 = save), which is never 0.
         while (header.length > 2 && header[0] === 0) {
             header.shift();
         }

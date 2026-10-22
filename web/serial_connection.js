@@ -1,9 +1,11 @@
 /**
- * WebSerial connection with the same public API as UsbConnection.
+ * Connects to the GB-Link over WebSerial, for browsers without WebUSB. It
+ * offers the same functions as UsbConnection.
  *
- * Frame format (matches GBLink firmware SerialLayer):
+ * Every message is framed the way the firmware's serial layer expects:
  *   | 0x47 0x42 | channel:1 | len:2 LE | payload[len] |
- *     sync 'GB'   0=cmd,1=data,2=status
+ *   "GB" marks the start; channel 0 is commands, 1 is link data, 2 is status;
+ *   len is the payload length, low byte first.
  */
 
 const SC_CMD = {

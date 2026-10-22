@@ -1,11 +1,13 @@
 /**
- * Word-accurate simulation of the GBA cart-dumper payload protocol.
+ * Tests the link protocol between the page and the GBA cart dumper, one
+ * 32-bit word at a time, without hardware.
  *
- * Drives the real web driver (web/gba_cart.js) against a generator-based
- * model of the payload state machine (source/gba_cart_dumper/source/main.c)
- * behind a fake transport with the firmware's semantics: lockstep 4-byte
- * exchanges, 64-byte write ceiling, un-armed slave reads as 0xFFFFFFFF and
- * loses the master's word.
+ * The page's real code (web/gba_cart.js) talks to a JavaScript model of the
+ * dumper that follows source/gba_cart_dumper/source/main.c step by step.
+ * Between them sits a pretend GB-Link that behaves like the firmware: each
+ * word sent swaps one word back, a USB write carries at most 64 bytes, and
+ * if the GBA isn't ready for a word, it reads back as 0xFFFFFFFF and the
+ * page's word is lost.
  *
  * Run:  node web/test/gba_protocol_sim.mjs
  */
@@ -16,11 +18,16 @@ const require = createRequire(import.meta.url);
 const { GbaCartClient, GBA_CART: C } = require("../gba_cart.js");
 
 // ---------------------------------------------------------------------------
-// Payload model (mirrors main.c exactly — see that file for the state machine)
+// Model of the dumper. Keep it in step with main.c.
 // ---------------------------------------------------------------------------
 
 const BUSY_WORD = 0xFFFFFFFF;
 
+// The model is a generator: each yield is the word the GBA has ready for the
+// next exchange, and the value it gets back is the word the page sent.
+// Yielding { busy: n } means the GBA is busy and misses the next n words.
+
+// Repeat the "done" word until the page says continue or abort.
 function* doneGate() {
     while (true) {
         const rx = yield C.G_DONE;
@@ -29,6 +36,8 @@ function* doneGate() {
     }
 }
 
+// Send sections of 64 words plus an XOR check word. The page then answers
+// whether to move on or send the section again.
 function* streamToMaster(words) {
     let off = 0;
     while (off < words.length) {
@@ -46,7 +55,7 @@ function* streamToMaster(words) {
     return true;
 }
 
-// streamRom + findFillRuns in main.c
+// Runs of sections that are 64 copies of one word (findFillRuns in main.c).
 function fillRuns(words) {
     const runs = [];
     for (let s = 0; s < words.length / 64; s++) {
@@ -63,6 +72,9 @@ function fillRuns(words) {
 
 const rotl1 = (c) => ((c << 1) | (c >>> 31)) >>> 0;
 
+// Send the ROM as records: a data section, a fill run, and finally an end
+// record. The page polls for every word; any other word asks the dumper to
+// seek to a section, finish or abort.
 function* streamRom(words, guardPolls) {
     const sections = words.length / 64;
     const runs = fillRuns(words);
@@ -101,7 +113,7 @@ function* streamRom(words, guardPolls) {
         while (true) {
             if (rx === C.M_FIN) return true;
             if (rx === C.M_ABORT || rx === C.M_POLL) return false;
-            if (((rx & 0xFF000000) >>> 0) === C.M_SEEK && (rx & 0xFFFFFF) < sections) {
+            if (((rx & 0xFF000000) >>> 0) === C.M_SEEK && (rx & 0xFFFFFF) <= sections) {
                 s = rx & 0xFFFFFF;
                 fi = runs.findIndex((r) => r.start >= s);
                 if (fi < 0) fi = runs.length;
@@ -113,6 +125,7 @@ function* streamRom(words, guardPolls) {
     }
 }
 
+// Receive sections of 64 words plus a check word, answering OK or FAIL.
 function* streamFromMaster(totalBytes) {
     const out = new Uint8Array(totalBytes);
     const dv = new DataView(out.buffer);
@@ -137,6 +150,7 @@ function* streamFromMaster(totalBytes) {
     return out;
 }
 
+// The dumper's main loop: wait for a command, echo it, then carry it out.
 function* payloadProgram(env) {
     const echoWord = (cmd) => (~(C.M_MAGIC | cmd)) >>> 0;
     while (true) {
@@ -221,7 +235,7 @@ class FakeGba {
         if (this.busyLeft > 0) {
             this.busyLeft--;
             if (this.busyLeft === 0) this.pending = this.gen.next(undefined);
-            return BUSY_WORD; // un-armed: master's word is lost
+            return BUSY_WORD; // not ready: the page's word is lost
         }
         const armed = this.pending.value >>> 0;
         this.pending = this.gen.next(masterWord >>> 0);
@@ -230,7 +244,7 @@ class FakeGba {
 }
 
 // ---------------------------------------------------------------------------
-// Fake transport with GBLink-Firmware gbLink-mode semantics
+// Pretend GB-Link, behaving like the firmware's GB-Link mode
 // ---------------------------------------------------------------------------
 
 class FakeUsb {
@@ -238,12 +252,14 @@ class FakeUsb {
         this.gba = gba;
         this.rxQueue = [];
         this.exchanges = 0;
-        this.corruptRxAt = opts.corruptRxAt ?? -1; // flip a GBA->host word once
-        this.corruptTxAt = opts.corruptTxAt ?? -1; // flip a host->GBA word once
-        this.corruptRxEvery = opts.corruptRxEvery ?? 0; // ... and periodically
+        this.corruptRxAt = opts.corruptRxAt ?? -1; // damage one word from the GBA
+        this.corruptTxAt = opts.corruptTxAt ?? -1; // damage one word to the GBA
+        this.corruptRxEvery = opts.corruptRxEvery ?? 0; // ... or every Nth word
         this.corruptTxEvery = opts.corruptTxEvery ?? 0;
-        this.dropEvery = opts.dropEvery ?? 0;     // payload not armed in time
-        this.from = opts.from ?? 0;               // periodic faults start here
+        this.dropEvery = opts.dropEvery ?? 0;     // GBA misses every Nth word
+        this.dropAt = opts.dropAt ?? -1;          // ... or just this one
+        this.endAt = -1;                          // where the first end record went
+        this.from = opts.from ?? 0;               // repeating faults start after this
     }
     periodic(every) {
         return every > 0 && this.exchanges > this.from && this.exchanges % every === 0;
@@ -257,7 +273,9 @@ class FakeUsb {
             if (this.exchanges === this.corruptTxAt || this.periodic(this.corruptTxEvery)) {
                 w = (w ^ 0x00400000) >>> 0;
             }
-            let r = this.periodic(this.dropEvery) ? BUSY_WORD : this.gba.exchange(w) >>> 0;
+            const drop = this.exchanges === this.dropAt || this.periodic(this.dropEvery);
+            let r = drop ? BUSY_WORD : this.gba.exchange(w) >>> 0;
+            if (this.endAt < 0 && w === C.M_SPOLL && (r >>> 24) === C.R_END) this.endAt = this.exchanges;
             if (this.exchanges === this.corruptRxAt || this.periodic(this.corruptRxEvery)) {
                 r = (r ^ 0x00010000) >>> 0;
             }
@@ -270,7 +288,7 @@ class FakeUsb {
 }
 
 // ---------------------------------------------------------------------------
-// Cart environments
+// Simulated cartridges
 // ---------------------------------------------------------------------------
 
 function makeEnv({ romMB = 1, savesize = 0x8000, title = "TESTGAME", code = "ABCD", maker = "01", fills = [] } = {}) {
@@ -317,7 +335,8 @@ function makeEnv({ romMB = 1, savesize = 0x8000, title = "TESTGAME", code = "ABC
         commitSave: function (data) { this.committed = data; this.save = data.slice(); },
         runBusyPolls: 3,
         runs: [],
-        // Stand-in for cartops.c: [executed, status, sum of the buffer's words, length]
+        // Stand-in for cartops.c: returns 1 (ran), status 0, the sum of the
+        // buffer's words, and its length.
         runOps: function (prog) {
             this.runs.push(prog);
             const w = wordsOf(prog);
@@ -373,8 +392,8 @@ test("dumpRom returns byte-exact data", async () => {
 
 test("dumpRom recovers from a corrupted section via resend", async () => {
     const env = makeEnv({ romMB: 1 });
-    // Exchange numbers: handshake+gate polls first; corrupt a word deep in
-    // the first ROM stream section.
+    // Exchange 40 lands inside the first ROM section, after the handshake
+    // and the busy polls.
     const { client } = makeClient(env, { corruptRxAt: 40 });
     const { data } = await client.dumpRom(() => {});
     assert.deepEqual(data, env.rom);
@@ -392,7 +411,7 @@ test("dumpSave rejects a cart without save memory", async () => {
     const env = makeEnv({ savesize: 0 });
     const { client } = makeClient(env);
     await assert.rejects(client.dumpSave(() => {}), (e) => e.code === "no-save");
-    // Payload must be back in idle: a follow-up info read works.
+    // The dumper must be waiting for commands again, so another read works.
     const info = await client.readInfo();
     assert.equal(info.noCart, false);
 });
@@ -490,7 +509,8 @@ test("runOps rejects a torn length without running anything", async () => {
     const env = makeEnv({});
     const { client, usb } = makeClient(env);
     await client.ping();
-    // corrupt the length word: the 3rd exchange after the 2 handshake words
+    // Damage the length word, which comes after the ready poll and the two
+    // handshake words.
     usb.corruptTxAt = usb.exchanges + 4;
     await assert.rejects(client.runOps(opBuffer(0x100, 9)), (e) => e.code === "desync");
     assert.equal(env.runs.length, 0);
@@ -502,18 +522,20 @@ test("runOps rejects a torn length without running anything", async () => {
 test("stale DONE gate is kicked by the next operation", async () => {
     const env = makeEnv({ savesize: 0x200 });
     const { client, gba } = makeClient(env);
-    // Drive the payload into a DONE gate by hand: command 2 accepted, then
-    // abandon it (as if the web page had been reloaded mid-operation).
+    // Start a save dump by hand and leave the dumper waiting at its "done"
+    // word, as if the page had been reloaded in the middle of it.
     gba.exchange(C.M_MAGIC | C.CMD_DUMP_SAVE);
     gba.exchange(C.M_GO);
-    for (let i = 0; i < 10; i++) gba.exchange(C.M_POLL); // run out the probe busy
-    // Payload is now re-arming G_DONE forever. A fresh operation must recover.
+    for (let i = 0; i < 10; i++) gba.exchange(C.M_POLL); // wait out the cart probe
+    // The dumper now repeats its "done" word. The next operation must still
+    // get through.
     const info = await client.readInfo();
     assert.equal(info.noCart, false);
 });
 
-// A 4 MB repro-style image: 1 MB of game, a zero-padded hole, and an erased
-// (0xFF) tail, plus a lone uniform section and a short non-uniform gap.
+// A 4 MB image laid out like a real one: 1 MB of game, a stretch of zeros,
+// and an erased (0xFF) tail, plus one lone uniform section and a short
+// stretch that isn't uniform.
 const PADDED = {
     romMB: 4,
     fills: [[0x80000, 0x100, 0x00], [0x100000, 0x10000, 0x00], [0x110000, 0x2F0000, 0xFF],
@@ -527,7 +549,7 @@ test("dumpRom sends uniform runs as fill records", async () => {
     const { data } = await client.dumpRom((done) => { last = done; });
     assert.deepEqual(data, env.rom);
     assert.equal(last, env.rom.length);
-    // ~1.1 MB of data records out of 4 MB
+    // Only about 1.1 MB of the 4 MB should go as data records.
     assert.ok(usb.exchanges < env.rom.length / 4 * 0.3, `${usb.exchanges} exchanges`);
 });
 
@@ -554,15 +576,24 @@ test("dumpRom recovers from words the payload missed", async () => {
     assert.equal(info.title, "TESTGAME");
 });
 
+test("dumpRom recovers from a missed end record", async () => {
+    const env = makeEnv({ romMB: 1 });
+    const clean = makeClient(env);
+    await clean.client.dumpRom(() => {});
+    const { client } = makeClient(env, { dropAt: clean.usb.endAt });
+    const { data } = await client.dumpRom(() => {});
+    assert.deepEqual(data, env.rom);
+});
+
 test("an abandoned ROM stream is aborted by the next operation", async () => {
     const env = makeEnv({ romMB: 1 });
     const { client, gba } = makeClient(env);
     gba.exchange(C.M_MAGIC | C.CMD_DUMP_ROM);
     gba.exchange(C.M_GO);
-    for (let i = 0; i < 10; i++) gba.exchange(C.M_POLL);  // probe busy
-    gba.exchange(C.M_CONT);                                 // leave the gate
-    for (let i = 0; i < 100; i++) gba.exchange(C.M_SPOLL); // mid-stream...
-    const info = await client.readInfo();                  // ...page reloaded
+    for (let i = 0; i < 10; i++) gba.exchange(C.M_POLL);  // cart probe
+    gba.exchange(C.M_CONT);                                 // past the "done" word
+    for (let i = 0; i < 100; i++) gba.exchange(C.M_SPOLL); // part way through...
+    const info = await client.readInfo();                  // ...the page reloads
     assert.equal(info.title, "TESTGAME");
     const { data } = await client.dumpRom(() => {});
     assert.deepEqual(data, env.rom);

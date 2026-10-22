@@ -3,153 +3,378 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
     <title>GB-Link Cart Doctor</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="card">
-        <h1>GB-Link Cart Doctor</h1>
-        <p class="subtitle">Dump and restore Game Boy or Game Boy Advance cartridges, and write ROMs to GBA flash carts, via GBA multiboot</p>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <symbol id="i-cart" viewBox="0 0 24 24"><path d="M6 2.5h9.5l3 3V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><rect x="7.5" y="5.5" width="8" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 18.5h1M11 18.5h1M14 18.5h1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+        <symbol id="i-gb" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="7.5" y="4.5" width="9" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 16h3M9.5 14.5v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="15.5" cy="15" r="1" fill="currentColor"/><circle cx="14" cy="17.5" r="1" fill="currentColor"/></symbol>
+        <symbol id="i-gba" viewBox="0 0 24 24"><path d="M2.5 9.5C2.5 7.6 3.8 6.5 5.5 6.5h13c1.7 0 3 1.1 3 3v5c0 1.9-1.3 3-3 3h-13c-1.7 0-3-1.1-3-3Z" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="7.5" y="8.5" width="9" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.8 12h2.4M5 10.8v2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="19" cy="11" r=".9" fill="currentColor"/><circle cx="18" cy="13" r=".9" fill="currentColor"/></symbol>
+        <symbol id="i-usb" viewBox="0 0 24 24"><path d="M12 3v14M12 3l-2 3h4l-2-3ZM12 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM12 13l-4-2.5V8M12 15l4-2.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="6.8" y="6.4" width="2.4" height="2" fill="currentColor"/><circle cx="16" cy="9" r="1.2" fill="currentColor"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5V4.5m0 0L7.5 9M12 4.5 16.5 9M5 19.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5 2.5 20h19L12 3.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></symbol>
+        <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 3v3M12 3v3M15 3v3M9 18v3M12 18v3M15 18v3M3 9h3M3 12h3M3 15h3M18 9h3M18 12h3M18 15h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+        <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3.5h11l3.5 3.5v12A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 3.5V8h7V3.5M7.5 20.5v-6h9v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+        <symbol id="i-rom" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+        <symbol id="i-bios" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.2 3.1 7.9 7.5 9 4.4-1.1 7.5-4.8 7.5-9V6L12 3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-erase" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    </svg>
 
-        <div id="browserWarning" class="warning" style="display:none">
-            Neither WebUSB nor WebSerial supported in this browser. Use Chrome/Edge or Firefox 151+.
-        </div>
-
-        <div class="notice">
-            Keep this tab active and in the foreground during dumps — browser tab throttling can stall USB transfers.
-        </div>
-
-        <div class="section">
-            <h2>1. Connect</h2>
-            <button id="connectBtn" class="btn">Connect USB</button>
-        </div>
-
-        <div class="section">
-            <h2>2. Cartridge type</h2>
-            <p class="hint">Which cartridge do you want to work with?</p>
-            <div class="btn-row">
-                <button id="modeGbBtn" class="btn btn-toggle">Game Boy</button>
-                <button id="modeGbaBtn" class="btn btn-toggle">Game Boy Advance</button>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="brand">
+                <span class="brand-mark"><svg><use href="#i-cart"/></svg></span>
+                <span class="brand-text">
+                    <span class="brand-name">Cart Doctor</span>
+                    <span class="brand-sub">GB-Link</span>
+                </span>
+            </div>
+            <div class="conn">
+                <span id="connState" class="pill" data-state="off"><span class="dot"></span><span id="connText">Not connected</span></span>
+                <button id="connectBtn" class="btn btn-primary"><svg class="ic"><use href="#i-usb"/></svg><span id="connectLabel">Connect USB</span></button>
             </div>
         </div>
+    </header>
 
-        <div id="gbSections" style="display:none">
-        <div class="section">
-            <h2>3. Load the homebrew</h2>
-            <p class="hint">Power on the GBA <b>without</b> a cartridge inserted, then click "Send Multiboot" — it loads the dumper onto the GBA, which switches itself to GBC mode. Click "Homebrew Already Loaded" instead when the GBA is already running the dumper (e.g. after a previous dump).</p>
-            <div class="btn-row">
-                <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot</button>
-                <button id="dumpOnlyBtn" class="btn" disabled>Homebrew Already Loaded</button>
+    <main class="page">
+        <div id="browserWarning" class="callout callout-danger" hidden>
+            <svg class="ic"><use href="#i-warn"/></svg>
+            <div>This browser can't talk to USB devices. Use Chrome or Edge, or Firefox 151 or newer.</div>
+        </div>
+
+        <div class="intro">
+            <h1>Back up, restore and flash cartridges</h1>
+            <p>Dump Game Boy, Game Boy Color and Game Boy Advance cartridges, restore saves and write ROMs to flash carts, all through a GBA and a GB-Link. Nothing to install on the GBA: the page sends it the program it needs.</p>
+        </div>
+
+        <div class="system-switch" role="tablist" aria-label="Cartridge type">
+            <button id="modeGbBtn" class="system-tab" role="tab" aria-selected="false">
+                <svg class="system-icon"><use href="#i-gb"/></svg>
+                <span class="system-text"><span class="system-name">Game Boy</span><span class="system-sub">GB and GBC cartridges</span></span>
+            </button>
+            <button id="modeGbaBtn" class="system-tab" role="tab" aria-selected="false">
+                <svg class="system-icon"><use href="#i-gba"/></svg>
+                <span class="system-text"><span class="system-name">Game Boy Advance</span><span class="system-sub">GBA cartridges</span></span>
+            </button>
+        </div>
+
+        <div class="layout">
+            <div class="col-main">
+                <div id="pickHint" class="card empty-card">
+                    <svg class="empty-icon"><use href="#i-cart"/></svg>
+                    <p>Choose the kind of cartridge above to get started.</p>
+                </div>
+
+                <!-- ============================ Game Boy ============================ -->
+                <div id="gbSections" hidden>
+                    <section class="card">
+                        <h2 class="card-title">Set up</h2>
+                        <ol class="steps">
+                            <li class="step" data-step="connect">
+                                <span class="step-mark"><span class="step-num">1</span><svg><use href="#i-check"/></svg></span>
+                                <div class="step-body">
+                                    <h3>Connect the GB-Link</h3>
+                                    <p>Plug the GB-Link into this computer and into the GBA's link port, then click Connect at the top.</p>
+                                </div>
+                            </li>
+                            <li class="step" data-step="load">
+                                <span class="step-mark"><span class="step-num">2</span><svg><use href="#i-check"/></svg></span>
+                                <div class="step-body">
+                                    <h3>Load the homebrew</h3>
+                                    <p>Turn the GBA on <b>without</b> a cartridge, then send the homebrew. The GBA switches to Game Boy Color mode and shows the Cart Doctor menu.</p>
+                                    <div class="btn-row">
+                                        <button id="startBtn" class="btn btn-primary" disabled>Send Multiboot</button>
+                                        <button id="dumpOnlyBtn" class="btn btn-ghost" disabled title="Use this after reloading the page while the GBA still shows the menu">Already Loaded</button>
+                                    </div>
+                                </div>
+                            </li>
+                            <li class="step" data-step="read">
+                                <span class="step-mark"><span class="step-num">3</span><svg><use href="#i-check"/></svg></span>
+                                <div class="step-body">
+                                    <h3>Insert the cartridge</h3>
+                                    <p>Insert a GB or GBC cartridge, then read it. The GBA's screen shows the cartridge's title once it's in. You can swap cartridges at any time.</p>
+                                    <div class="btn-row">
+                                        <button id="gbInfoBtn" class="btn" disabled>Read Cartridge</button>
+                                    </div>
+                                    <details class="tip">
+                                        <summary>The GBA resets when I insert a cartridge</summary>
+                                        <p>Some cartridges have a voltage supervisor that resets the GBA. Insert the cartridge slowly, or cover pin 30 (/RESET, the third pin from the right) with a small piece of kapton tape.</p>
+                                    </details>
+                                </div>
+                            </li>
+                        </ol>
+                    </section>
+
+                    <section class="card cart-card">
+                        <h2 class="card-title">Cartridge</h2>
+                        <div id="gbCartPanel" class="cart-panel"></div>
+                    </section>
+
+                    <section class="card">
+                        <div class="tabs" role="tablist" data-tabs="gb">
+                            <button class="tab" role="tab" data-tab="backup">Back Up</button>
+                            <button class="tab" role="tab" data-tab="restore">Restore Save</button>
+                            <button class="tab" role="tab" data-tab="flash">Flash Cart</button>
+                        </div>
+
+                        <div class="tab-panel" data-tabs="gb" data-panel="backup">
+                            <div class="action-grid">
+                                <div class="action">
+                                    <svg class="action-icon"><use href="#i-rom"/></svg>
+                                    <h3>ROM</h3>
+                                    <p>The game itself, as a <code>.gb</code> or <code>.gbc</code> file.</p>
+                                    <button id="gbDumpRomBtn" class="btn btn-primary" disabled>Dump ROM</button>
+                                </div>
+                                <div class="action">
+                                    <svg class="action-icon"><use href="#i-save"/></svg>
+                                    <h3>Save</h3>
+                                    <p>The save memory, as a <code>.sav</code> file.</p>
+                                    <button id="gbDumpSaveBtn" class="btn btn-primary" disabled>Dump Save</button>
+                                </div>
+                            </div>
+                            <p class="fine">Every dump reads the cartridge first, so it always matches the cartridge that's in.</p>
+                        </div>
+
+                        <div class="tab-panel" data-tabs="gb" data-panel="restore" hidden>
+                            <div class="callout callout-warn">
+                                <svg class="ic"><use href="#i-warn"/></svg>
+                                <div><b>This overwrites the save on the cartridge.</b> Dump the save first if you might want it back.</div>
+                            </div>
+                            <label class="drop" data-for="restoreFile">
+                                <input type="file" id="restoreFile" accept=".sav,.srm,application/octet-stream">
+                                <svg class="drop-icon"><use href="#i-upload"/></svg>
+                                <span class="drop-title">Choose a save file</span>
+                                <span class="drop-sub">or drop a <code>.sav</code> file here</span>
+                            </label>
+                            <p id="gbRestoreNote" class="file-note"></p>
+                            <p class="fine">The file must be exactly the size of the cartridge's save memory.</p>
+                            <div class="btn-row">
+                                <button id="restoreBtn" class="btn btn-danger" disabled>Restore Save</button>
+                            </div>
+                        </div>
+
+                        <div class="tab-panel" data-tabs="gb" data-panel="flash" hidden>
+                            <p class="lead">For flash carts written through the cartridge's write pin (/WR), which is most current ones. Carts written through the AUDIO pin can't be written from a GBA.</p>
+                            <div class="callout callout-warn">
+                                <svg class="ic"><use href="#i-warn"/></svg>
+                                <div><b>This overwrites the ROM on the cart.</b> Its save memory isn't touched, but carts that keep the save in the flash chip itself (batteryless saves) may lose it. Dump the save first.</div>
+                            </div>
+                            <div class="flash-row">
+                                <button id="gbFlashDetectBtn" class="btn" disabled><svg class="ic"><use href="#i-chip"/></svg>Detect Flash Cart</button>
+                                <div id="gbFlashPanel" class="flash-result" hidden></div>
+                            </div>
+                            <div class="field">
+                                <label class="field-label" for="gbFlashProfile">Cart type</label>
+                                <select id="gbFlashProfile" class="select">
+                                    <option value="">Detect automatically</option>
+                                </select>
+                            </div>
+                            <label class="drop" data-for="gbFlashFile">
+                                <input type="file" id="gbFlashFile" accept=".gb,.gbc,.bin,application/octet-stream">
+                                <svg class="drop-icon"><use href="#i-upload"/></svg>
+                                <span class="drop-title">Choose a ROM</span>
+                                <span class="drop-sub">or drop a <code>.gb</code> or <code>.gbc</code> file here</span>
+                            </label>
+                            <label class="check">
+                                <input type="checkbox" id="gbFlashEraseRest" checked>
+                                <span><b>Erase old data after the ROM.</b> Leftovers from a bigger ROM written earlier are erased too, so a dump of the cart gives back just this ROM.</span>
+                            </label>
+                            <div class="btn-row">
+                                <button id="gbFlashWriteBtn" class="btn btn-danger" disabled>Write ROM</button>
+                            </div>
+                            <p class="fine">Writing to an erased cart takes about 3.5 minutes per MB. Parts that already hold the right data are skipped, so writing the same ROM again takes about a minute per MB and finishing a cancelled write is quick. Everything written is read back and checked.</p>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- ======================== Game Boy Advance ======================== -->
+                <div id="gbaSections" hidden>
+                    <section class="card">
+                        <h2 class="card-title">Set up</h2>
+                        <ol class="steps">
+                            <li class="step" data-step="connect">
+                                <span class="step-mark"><span class="step-num">1</span><svg><use href="#i-check"/></svg></span>
+                                <div class="step-body">
+                                    <h3>Connect the GB-Link</h3>
+                                    <p>Plug the GB-Link into this computer and into the GBA's link port, then click Connect at the top.</p>
+                                </div>
+                            </li>
+                            <li class="step" data-step="load">
+                                <span class="step-mark"><span class="step-num">2</span><svg><use href="#i-check"/></svg></span>
+                                <div class="step-body">
+                                    <h3>Load the dumper</h3>
+                                    <p>Turn the GBA on <b>without</b> a cartridge (or hold <b>START + SELECT</b> at the Game Boy logo if one is in), then send the dumper.</p>
+                                    <div class="btn-row">
+                                        <button id="gbaSendBtn" class="btn btn-primary" disabled>Send Multiboot</button>
+                                        <button id="gbaLoadedBtn" class="btn btn-ghost" disabled title="Use this after reloading the page while the GBA still runs the dumper">Already Loaded</button>
+                                    </div>
+                                </div>
+                            </li>
+                            <li class="step" data-step="read">
+                                <span class="step-mark"><span class="step-num">3</span><svg><use href="#i-check"/></svg></span>
+                                <div class="step-body">
+                                    <h3>Insert the cartridge</h3>
+                                    <p>Insert a GBA cartridge, then read it. The dumper's screen shows the cartridge as soon as it's in. The BIOS can be dumped without one.</p>
+                                    <div class="btn-row">
+                                        <button id="gbaInfoBtn" class="btn" disabled>Read Cartridge</button>
+                                    </div>
+                                    <details class="tip">
+                                        <summary>The GBA resets when I insert a cartridge</summary>
+                                        <p>Some cartridges have a voltage supervisor that resets the GBA. Insert the cartridge slowly, or cover pin 30 (/RESET, the third pin from the right) with a small piece of kapton tape.</p>
+                                    </details>
+                                </div>
+                            </li>
+                        </ol>
+                    </section>
+
+                    <section class="card cart-card">
+                        <h2 class="card-title">Cartridge</h2>
+                        <div id="gbaCartPanel" class="cart-panel"></div>
+                    </section>
+
+                    <section class="card">
+                        <div class="tabs" role="tablist" data-tabs="gba">
+                            <button class="tab" role="tab" data-tab="backup">Back Up</button>
+                            <button class="tab" role="tab" data-tab="restore">Save</button>
+                            <button class="tab" role="tab" data-tab="flash">Flash Cart</button>
+                        </div>
+
+                        <div class="tab-panel" data-tabs="gba" data-panel="backup">
+                            <div class="action-grid action-grid-3">
+                                <div class="action">
+                                    <svg class="action-icon"><use href="#i-rom"/></svg>
+                                    <h3>ROM</h3>
+                                    <p>The game itself, as a <code>.gba</code> file.</p>
+                                    <button id="gbaDumpRomBtn" class="btn btn-primary" disabled>Dump ROM</button>
+                                </div>
+                                <div class="action">
+                                    <svg class="action-icon"><use href="#i-save"/></svg>
+                                    <h3>Save</h3>
+                                    <p>The save memory, as a <code>.sav</code> file.</p>
+                                    <button id="gbaDumpSaveBtn" class="btn btn-primary" disabled>Dump Save</button>
+                                </div>
+                                <div class="action">
+                                    <svg class="action-icon"><use href="#i-bios"/></svg>
+                                    <h3>BIOS</h3>
+                                    <p>The GBA's own BIOS. No cartridge needed.</p>
+                                    <button id="gbaBiosBtn" class="btn" disabled>Dump BIOS</button>
+                                </div>
+                            </div>
+                            <p class="fine">A ROM dump takes about 1.5 minutes per 4&nbsp;MB of game data; padding and erased space take almost no time. Saves and the BIOS take seconds. ROMs are saved at their own size: on a flash cart, that's the file that was written to it.</p>
+                        </div>
+
+                        <div class="tab-panel" data-tabs="gba" data-panel="restore" hidden>
+                            <div class="callout callout-warn">
+                                <svg class="ic"><use href="#i-warn"/></svg>
+                                <div><b>Both of these overwrite the save on the cartridge.</b> Dump the save first if you might want it back.</div>
+                            </div>
+                            <div class="subsection">
+                                <h3>Restore a save</h3>
+                                <label class="drop" data-for="gbaRestoreFile">
+                                    <input type="file" id="gbaRestoreFile" accept=".sav,.srm,application/octet-stream">
+                                    <svg class="drop-icon"><use href="#i-upload"/></svg>
+                                    <span class="drop-title">Choose a save file</span>
+                                    <span class="drop-sub">or drop a <code>.sav</code> file here</span>
+                                </label>
+                                <p id="gbaRestoreNote" class="file-note"></p>
+                                <p class="fine">The file must be exactly the size of the cartridge's save memory: 512&nbsp;B or 8&nbsp;KB EEPROM, 32&nbsp;KB SRAM, or 64&nbsp;KB or 128&nbsp;KB flash.</p>
+                                <div class="btn-row">
+                                    <button id="gbaRestoreBtn" class="btn btn-danger" disabled>Restore Save</button>
+                                </div>
+                            </div>
+                            <div class="subsection">
+                                <h3>Erase the save</h3>
+                                <p class="fine">Fills the save memory with zeros.</p>
+                                <div class="btn-row">
+                                    <button id="gbaEraseBtn" class="btn btn-danger-ghost" disabled><svg class="ic"><use href="#i-erase"/></svg>Erase Save</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="tab-panel" data-tabs="gba" data-panel="flash" hidden>
+                            <p class="lead">For repro ("bootleg") carts and flash carts.</p>
+                            <div class="callout callout-warn">
+                                <svg class="ic"><use href="#i-warn"/></svg>
+                                <div><b>This overwrites the ROM on the cart.</b> Carts that keep their save in the flash chip itself (batteryless saves) may lose it; dump the save first. Saves on a battery-backed chip aren't touched.</div>
+                            </div>
+                            <div class="flash-row">
+                                <button id="gbaFlashDetectBtn" class="btn" disabled><svg class="ic"><use href="#i-chip"/></svg>Detect Flash Cart</button>
+                                <div id="gbaFlashPanel" class="flash-result" hidden></div>
+                            </div>
+                            <div class="field">
+                                <label class="field-label" for="gbaFlashProfile">Cart type</label>
+                                <select id="gbaFlashProfile" class="select">
+                                    <option value="">Detect automatically</option>
+                                </select>
+                            </div>
+                            <label class="drop" data-for="gbaFlashFile">
+                                <input type="file" id="gbaFlashFile" accept=".gba,.bin,application/octet-stream">
+                                <svg class="drop-icon"><use href="#i-upload"/></svg>
+                                <span class="drop-title">Choose a ROM</span>
+                                <span class="drop-sub">or drop a <code>.gba</code> file here</span>
+                            </label>
+                            <label class="check">
+                                <input type="checkbox" id="gbaFlashEraseRest" checked>
+                                <span><b>Erase old data after the ROM.</b> Leftovers from a bigger ROM written earlier are erased too, so a dump of the cart gives back just this ROM. Untick it to keep them, for example a batteryless save stored there. Other games on a multi-game cart are never touched.</span>
+                            </label>
+                            <div class="btn-row">
+                                <button id="gbaFlashWriteBtn" class="btn btn-danger" disabled>Write ROM</button>
+                            </div>
+                            <p class="fine">Writing takes about 2 minutes per 4&nbsp;MB. Parts that already hold the right data are skipped, so writing the same ROM again, or finishing a cancelled write, is quick. Everything written is read back and checked.</p>
+                        </div>
+                    </section>
+                </div>
             </div>
-        </div>
 
-        <div class="section">
-            <h2>4. Dump</h2>
-            <p class="hint">Insert your GB/GBC cartridge once the GBA is in GBC mode. Some cartridges have a voltage supervisor that resets the GBA on insertion — placing a small piece of kapton tape over pin 30 (/RESET, 3rd pin from the right) on the cartridge prevents this. Inserting slowly can also help. Once the cartridge is detected, press on the GBA:</p>
-            <ul class="hint-list">
-                <li><b>A</b> — Dump ROM only</li>
-                <li><b>B</b> — Dump SRAM (save) only</li>
-                <li><b>START</b> — Dump both ROM and SRAM</li>
-            </ul>
-            <p class="hint">Dumps download automatically — several cartridges can be dumped in a row without re-sending the multiboot.</p>
-        </div>
+            <aside class="col-side">
+                <section class="card activity" id="activityCard" data-tone="idle">
+                    <div class="activity-head">
+                        <h2 class="card-title">Activity</h2>
+                        <button id="cancelBtn" class="btn btn-sm btn-danger-ghost" disabled>Cancel</button>
+                    </div>
+                    <p id="status" class="status"><span class="dot"></span><span id="statusText">Not connected</span></p>
+                    <div class="progress" aria-hidden="true"><div id="progressFill" class="progress-fill"></div></div>
+                    <p id="progressText" class="progress-text"></p>
+                    <p class="fine activity-note">Keep this tab in front while a transfer runs. Browsers slow down background tabs, which can stall the USB link.</p>
+                </section>
 
-        <div class="section">
-            <h2>5. Restore a save (write to cart)</h2>
-            <p class="hint">
-                <b>This overwrites the save on the cartridge.</b> Make sure the
-                GBA is already running the dumper ROM (use "Send Multiboot"
-                first if not), then load a <code>.sav</code> file below,
-                click "Restore Save", and when prompted press <b>SELECT</b> on
-                the GBA. The file's size must exactly match the cart's SRAM, or
-                the restore is refused.
-            </p>
-            <input type="file" id="restoreFile" accept=".sav,.srm,application/octet-stream">
-            <div class="btn-row">
-                <button id="restoreBtn" class="btn btn-primary" disabled>Restore Save</button>
+                <section class="card files" id="downloadSection">
+                    <h2 class="card-title">Files</h2>
+                    <p id="filesEmpty" class="files-empty">Dumps show up here. Nothing is saved to your computer until you click Save.</p>
+                    <ul id="fileList" class="file-list"></ul>
+                </section>
+
+                <details class="card log-card" id="logCard">
+                    <summary><span class="card-title">Log</span><span id="logCount" class="log-count"></span></summary>
+                    <div id="log" class="log"></div>
+                </details>
+            </aside>
+        </div>
+    </main>
+
+    <footer class="app-footer">
+        <span>Version 1.6.0</span>
+        <span class="sep">·</span>
+        <span>Needs the <a href="https://github.com/GB-Link/GBLink-Firmware" target="_blank" rel="noopener">GB-Link firmware</a></span>
+        <span class="sep">·</span>
+        <a href="https://github.com/GB-Link/gb-cart-doctor-web" target="_blank" rel="noopener">Source</a>
+    </footer>
+
+    <dialog id="confirmDialog" class="dialog">
+        <form method="dialog">
+            <div class="dialog-icon"><svg><use href="#i-warn"/></svg></div>
+            <h3 id="confirmTitle"></h3>
+            <p id="confirmBody"></p>
+            <div class="dialog-actions">
+                <button value="cancel" class="btn btn-ghost">Cancel</button>
+                <button value="ok" id="confirmOk" class="btn btn-danger"></button>
             </div>
-        </div>
-        </div>
-
-        <div id="gbaSections" style="display:none">
-        <div class="section">
-            <h2>3. Load the homebrew</h2>
-            <p class="hint">Power on the GBA <b>without</b> a cartridge (or hold <b>START+SELECT</b> at the logo if one is inserted), then click "Send Multiboot". Click "Homebrew Already Loaded" instead when the GBA is already running the dumper (e.g. after a previous dump).</p>
-            <div class="btn-row">
-                <button id="gbaSendBtn" class="btn btn-primary" disabled>Send Multiboot</button>
-                <button id="gbaLoadedBtn" class="btn" disabled>Homebrew Already Loaded</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>4. Dump</h2>
-            <p class="hint">Insert your GBA cartridge once the dumper is running, then click "Read Cartridge". Everything is controlled from the browser, and the BIOS dump needs no cartridge at all. A ROM dump takes about 1.5 minutes per 4&nbsp;MB of game data; padding and erased space take almost no time. Saves and the BIOS take seconds. ROMs are saved at their own size; on a flash cart that is the file that was written to it, without the erased space after it.</p>
-            <div id="gbaCartPanel" class="hint" style="display:none"></div>
-            <div class="btn-row">
-                <button id="gbaInfoBtn" class="btn" disabled>Read Cartridge</button>
-                <button id="gbaDumpRomBtn" class="btn btn-primary" disabled>Dump ROM</button>
-                <button id="gbaDumpSaveBtn" class="btn btn-primary" disabled>Dump Save</button>
-                <button id="gbaBiosBtn" class="btn" disabled>Dump BIOS</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>5. Restore or erase a save (write to cart)</h2>
-            <p class="hint"><b>This overwrites the save on the cartridge.</b> The file's size must exactly match the cart's save memory (512&nbsp;B or 8&nbsp;KB EEPROM, 32&nbsp;KB SRAM, 64&nbsp;KB or 128&nbsp;KB flash), or the restore is refused. Erase zero-fills the save memory.</p>
-            <input type="file" id="gbaRestoreFile" accept=".sav,.srm,application/octet-stream">
-            <div class="btn-row">
-                <button id="gbaRestoreBtn" class="btn btn-primary" disabled>Restore Save</button>
-                <button id="gbaEraseBtn" class="btn btn-danger" disabled>Erase Save</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>6. Write a ROM to a flash cart</h2>
-            <p class="hint">For repro ("bootleg") carts and flash carts. Click "Detect Flash Cart" to identify the flash chip, choose a <code>.gba</code> file, then click "Write ROM". Writing takes roughly 2 minutes for 4&nbsp;MB. Parts of the chip that already hold the right data are skipped, so writing the same ROM again (or finishing a cancelled write) is quick. Everything written is read back and checked.</p>
-            <p class="hint"><b>This overwrites the ROM on the cart.</b> Carts that keep their save in the flash chip itself (batteryless saves) may lose it; back the save up first. Saves on a battery-backed chip are not touched.</p>
-            <div id="gbaFlashPanel" class="hint" style="display:none"></div>
-            <label class="field-label" for="gbaFlashProfile">Cart type</label>
-            <select id="gbaFlashProfile" class="select">
-                <option value="">Detect automatically</option>
-            </select>
-            <input type="file" id="gbaFlashFile" accept=".gba,.bin,application/octet-stream">
-            <label class="check-label"><input type="checkbox" id="gbaFlashEraseRest" checked> Erase old data after the ROM</label>
-            <p class="hint">Old data after the ROM, left from a bigger ROM written earlier, is erased too, so a dump of the cart gives back just the new ROM. Untick to keep it, for example a batteryless save stored there. Other games on a multi-game cart are never touched.</p>
-            <div class="btn-row">
-                <button id="gbaFlashDetectBtn" class="btn" disabled>Detect Flash Cart</button>
-                <button id="gbaFlashWriteBtn" class="btn btn-danger" disabled>Write ROM</button>
-            </div>
-        </div>
-        </div>
-
-        <div class="section">
-            <h2>Progress</h2>
-            <div class="progress-bar">
-                <div id="progressFill" class="progress-fill"></div>
-            </div>
-            <p id="progressText" class="progress-text">Idle</p>
-            <p id="status" class="status">Disconnected</p>
-            <div class="btn-row" style="margin-top:0.5rem">
-                <button id="cancelBtn" class="btn btn-danger" disabled>Cancel</button>
-            </div>
-        </div>
-
-        <div id="downloadSection" class="section" style="display:none">
-            <h2>Download</h2>
-        </div>
-
-        <div class="section">
-            <h2>Log</h2>
-            <div id="log" class="log"></div>
-        </div>
-        <footer class="app-footer">
-            <p>Version: 1.5.5</p>
-            <p>
-                Requires <a href="https://github.com/GB-Link/GBLink-Firmware" target="_blank">USB
-                    Firmware</a> - <a href="https://github.com/GB-Link/gb-cart-doctor-web" target="_blank">Source</a>
-            </p>
-        </footer>
-    </div>
+        </form>
+    </dialog>
 
     <script src="usb_connection.js"></script>
     <script src="serial_connection.js"></script>
@@ -157,9 +382,11 @@
     <script src="gba_cart.js"></script>
     <script src="flashcart_profiles.js"></script>
     <script src="gba_flash.js"></script>
-    <script src="dump_receiver.js"></script>
     <script src="dump_receiver_fast.js"></script>
     <script src="restore_sender_fast.js"></script>
+    <script src="gb_cart.js"></script>
+    <script src="gb_flashcart_profiles.js"></script>
+    <script src="gb_flash.js"></script>
     <script src="app.js"></script>
     <script src="launcher-return.js"></script>
 </body>

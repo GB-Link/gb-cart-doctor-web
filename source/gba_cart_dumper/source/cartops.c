@@ -1,21 +1,22 @@
 /*
- * Cartridge op interpreter — see cartops.h for the buffer and profile format.
+ * Runs the cartridge programs sent by the web page. cartops.h describes the
+ * buffer and the write profile.
  *
- * The write loop follows how FlashGBX drives its cart readers: a profile
- * lists the chip's command words for one programming unit (a single word, or
- * one write buffer), with "SA" (unit start), "PA"/"PD" (the unit's addresses
- * and data) and "BS" (buffer count) placeholders, plus optional status polls
- * after any step. When a profile has no poll after the data step, the chip's
- * own completion check runs: AMD-style chips are polled until the last word
- * reads back as written, Intel/Sharp-style chips until the status register
- * reports ready.
+ * Flash writing works the way FlashGBX drives its cart readers. A profile
+ * lists the commands the chip needs to write one unit (a single word, or
+ * one write buffer). Placeholders stand for the unit's start address (SA),
+ * its addresses and data (PA, PD) and the buffer count (BS), and any step
+ * can wait for the chip afterwards. If the profile doesn't wait after the
+ * data itself, a standard check runs: AMD-style chips are read until the
+ * last word reads back as written, Intel/Sharp-style chips until their
+ * status register says ready.
  */
 #include "cartops.h"
 
 #ifndef CARTOPS_SIM
 #include <gba_base.h>
 #include <gba_timers.h>
-#include <stdio.h>
+#include "ui.h"
 
 #define REG_WAITCNT_OPS *(vu16 *)(REG_BASE + 0x204)
 
@@ -24,7 +25,8 @@ static inline void romWr(u32 a, u16 v) { *(vu16 *)(0x08000000 + a) = v; }
 static inline u8 sramRd(u32 a) { return *(vu8 *)(0x0E000000 + a); }
 static inline void sramWr(u32 a, u8 v) { *(vu8 *)(0x0E000000 + a) = v; }
 
-/* TM2 counts at 16.78 MHz / 1024 = 16384 Hz, TM3 counts its overflows. */
+/* A 32-bit clock at 16384 ticks a second: timer 2 counts at 16.78 MHz / 1024
+ * and timer 3 counts each time timer 2 wraps. */
 static void ticksInit(void)
 {
 	REG_TM2CNT_H = 0;
@@ -47,15 +49,16 @@ static inline u32 ticks(void)
 
 static void show(u32 id, u32 pct)
 {
-	static const char *const msgs[] = {
-		"", "Detecting flash chip", "Erasing", "Writing ROM",
-		"Verifying", "Write finished", "Write failed",
+	static const u8 acts[] = {
+		ACT_CONNECTED, ACT_FLASH_DETECT, ACT_FLASH_ERASE, ACT_FLASH_WRITE,
+		ACT_FLASH_VERIFY, ACT_FLASH_DONE, ACT_FLASH_FAILED,
 	};
-	const char *m = id < sizeof(msgs) / sizeof(msgs[0]) ? msgs[id] : "";
-	if (id >= 5)
-		iprintf("\x1b[12;0H%-26s\n", m);
-	else
-		iprintf("\x1b[12;0H%-21s %3lu%%\n", m, (unsigned long)pct);
+	if (id >= sizeof(acts))
+		return;
+	if (uiCurrentActivity() != acts[id])
+		uiActivity(acts[id]);
+	if (id >= 2 && id <= 4)
+		uiProgress(pct, 100);
 }
 
 #define FAST IWRAM_CODE __attribute__((noinline))
@@ -89,8 +92,8 @@ static struct {
 
 static u32 crcTable[256];
 
-/* OP_SRCMD: a command written before every OP_WAIT poll read (FlashGBX's
- * wait_read_status_register for Sharp chips). */
+/* Set by OP_SRCMD: a command to write before every OP_WAIT read. Some Sharp
+ * chips need it (FlashGBX's wait_read_status_register). */
 static bool srCmdOn;
 static u32 srCmdAddr;
 static u16 srCmdValue;
@@ -112,9 +115,9 @@ static u32 msToTicks(u32 ms)
 	return ms * 16 + (ms * 384) / 1000 + 1;
 }
 
-/* Poll until (read & mask) == (value & mask) on two reads in a row: a chip
- * finishing mid-read can show the right DQ7 while the other bits still carry
- * status. */
+/* Read until the masked value matches twice in a row. A chip that finishes
+ * during a read can show the right top bit while the other bits still hold
+ * its status. */
 FAST static bool pollRom(u32 addr, u16 value, u16 mask, u32 limit, u16 *last)
 {
 	u32 t0 = ticks();
@@ -171,9 +174,10 @@ static bool loadCfg(const u32 *w, u32 words)
 	return cfg.count > 0;
 }
 
-/* Program `bytes` (a multiple of the unit) at ROM byte address `addr`. Units
- * that are all 0xFFFF are skipped: erased flash already holds them. Returns
- * true, or false with the unit address in *failAddr and the last status. */
+/* Write `bytes` (a whole number of units) to flash at ROM byte address
+ * `addr`. Units that are all 0xFFFF are skipped, since erased flash already
+ * reads that way. On failure, returns false with the unit's address in
+ * *failAddr and the chip's last status in *lastRead. */
 FAST static bool progRange(const u16 *data, u32 addr, u32 bytes,
 	u32 *failAddr, u16 *lastRead)
 {
@@ -206,8 +210,8 @@ FAST static bool progRange(const u16 *data, u32 addr, u32 bytes,
 				romWr(a & ROM_MASK, v);
 			}
 			if (wak != K_NONE) {
-				/* A poll for the data always watches the last word
-				 * written: that is where data polling reports. */
+				/* Waiting on the data always reads the last word
+				 * written, since that is where the chip reports. */
 				u32 a = (wvk == K_PD || wak == K_PA) ? lastPA
 					: wak == K_ABS ? e->waitAddr : sa + e->waitAddr;
 				u16 v = wvk == K_PD ? lastPD : (u16)e->waitValue;
@@ -230,7 +234,8 @@ FAST static bool progRange(const u16 *data, u32 addr, u32 bytes,
 	return true;
 }
 
-/* First mismatching byte offset, or OPV_SAME. data == NULL checks for 0xFFFF. */
+/* Returns the byte offset of the first difference, or OPV_SAME. With no
+ * data, checks that the range is erased (all 0xFFFF). */
 FAST static u32 verifyRange(const u16 *data, u32 addr, u32 bytes, u32 *gotExp)
 {
 	u32 i;
@@ -274,7 +279,7 @@ u32 cartOpsRun(const u8 *buf, u32 len, u32 *result, u32 resultWords)
 	srCmdOn = false;
 #ifndef CARTOPS_SIM
 	const u16 waitcnt = REG_WAITCNT_OPS;
-	REG_WAITCNT_OPS = waitcnt & ~0x001C; /* ROM WS0 at the slowest 4/2 */
+	REG_WAITCNT_OPS = waitcnt & ~0x001C; /* slowest ROM timing, safe for flash */
 #endif
 
 	for (pc = 0; pc + 16 <= len; pc += 16) {
@@ -318,7 +323,7 @@ u32 cartOpsRun(const u8 *buf, u32 len, u32 *result, u32 resultWords)
 					ok = (last & mask) == want;
 				} while (!ok && ticks() - t0 <= limit);
 			} else {
-				romRd(a & ROM_MASK); /* dummy read, as FlashGBX does for bootlegs */
+				romRd(a & ROM_MASK); /* throwaway read, as FlashGBX does for bootleg carts */
 				ok = pollRom(a & ROM_MASK, (u16)b, (u16)(b >> 16), msToTicks(c), &last);
 			}
 			PUT(last);

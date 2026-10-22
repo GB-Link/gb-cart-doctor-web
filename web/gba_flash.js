@@ -1,23 +1,30 @@
 /**
- * Writing ROMs to GBA flash carts (repros and flash carts) for GBLink Cart Doctor.
+ * Writes ROMs to GBA flash carts and reproduction carts.
  *
- * The GBA payload (source/gba_cart_dumper/source/cartops.c) runs small
- * programs of cart bus operations that this file builds: command writes,
- * reads, status polls, and a program/verify loop that runs at bus speed.
- * Everything cart specific lives here, driven by FlashGBX's cart profiles
- * (web/flashcart_profiles.js):
- *   - detection follows FlashGBX's DetectFlash: try every profile's flash ID
- *     command, match the IDs, read CFI, and tell same-ID profiles apart by
- *     size;
- *   - carts no profile matches get Burn2Slot's scan (github.com/vrodin/Burn2Slot,
- *     MIT): AMD-style chips behind any of its six data-line wirings and six
- *     command-address layouts, and Intel-style chips;
- *   - writing erases only the sectors the ROM covers (skipping sectors that
- *     already hold the right data), then programs and verifies 64 KB at a time.
+ * This file builds small programs of cartridge operations (command writes,
+ * reads, waiting on the chip's status, and a write-and-check loop) and the
+ * dumper on the GBA runs them (source/gba_cart_dumper/source/cartops.c).
+ * All the knowledge about particular carts lives here, taken from FlashGBX's
+ * cart profiles (web/flashcart_profiles.js):
+ *   - Detection works like FlashGBX: try each profile's "read flash ID"
+ *     command, compare the IDs, read the chip's self-description (CFI), and
+ *     tell apart profiles that share an ID by their size.
+ *   - Carts that match no profile get Burn2Slot's scan
+ *     (github.com/vrodin/Burn2Slot, MIT). It finds AMD-style chips wired in
+ *     any of six data-line orders with any of six command address layouts,
+ *     as well as Intel-style chips.
+ *   - Writing erases only the sectors the ROM covers, skipping any that
+ *     already hold the right data, then writes and checks 64 KB at a time.
  */
 
 "use strict";
 
+// Must match cartops.h on the GBA. Each op is four 32-bit words: the op
+// number and three arguments. W16/RD16 write and read 16-bit words; W8S/RD8S
+// use the 8-bit SRAM area. ST_ values are the program's final status, K_
+// values say how a profile's command address (absolute, sector, program
+// address) and value (immediate, buffer size, program data) are filled in,
+// and SHOW_ values pick what the GBA screen says.
 const CARTOP = {
     END: 0, W16: 1, W8S: 2, RD16: 3, RD8S: 4, WAIT: 5, DELAY: 6, CFG: 7,
     PROG: 8, VERIFY: 9, CRC32: 10, SHOW: 11, SRCMD: 12,
@@ -31,7 +38,7 @@ const CARTOP = {
     RESULT_WORDS: 0x1000 - 2,
 };
 
-const FLASH_CHUNK = 0x10000;        // data bytes per program/verify run
+const FLASH_CHUNK = 0x10000;        // bytes written and checked per program
 const ERASE_TIMEOUT_MS = 30000;     // one sector erase
 const UNIT_TIMEOUT_MS = 250;        // one word or write buffer
 const BANK_WINDOW = 0x2000000;      // the GBA sees 32 MB of ROM at a time
@@ -46,7 +53,10 @@ class FlashcartError extends Error {
 
 // ---------------------------------------------------------------- op programs
 
-/** Builds one op buffer for the payload, and slices its results. */
+/**
+ * Builds one cart op program for the GBA. Each op that reads something
+ * returns a handle used to find its words in the CartOpResult.
+ */
 class CartOpProgram {
     constructor() {
         this.ops = [];
@@ -63,7 +73,7 @@ class CartOpProgram {
         return handle;
     }
 
-    /** Add data to the buffer; returns a reference for prog/verify/cfg. */
+    /** Add a block of data to the program; returns a reference for prog/verify/cfg. */
     attach(bytes) {
         this.blobs.push(bytes);
         return { blob: this.blobs.length - 1, length: bytes.length };
@@ -84,7 +94,7 @@ class CartOpProgram {
     show(id, pct = 0) { return this._op(CARTOP.SHOW, id, Math.max(0, Math.min(100, Math.floor(pct)))); }
     srcmd(addr, value) { return this._op(CARTOP.SRCMD, addr, value === null ? 0xFFFFFFFF : value & 0xFFFF); }
 
-    /** Lay out ops then data, padded to the payload's 256-byte sections. */
+    /** Lay out the ops, then the data, padded to a multiple of 256 bytes. */
     build() {
         const opsBytes = (this.ops.length + 1) * 16;
         const offsets = [];
@@ -107,6 +117,7 @@ class CartOpProgram {
     }
 }
 
+// The GBA's reply: how many ops ran, the final status, then each read's words.
 class CartOpResult {
     constructor(words) {
         this.words = words;
@@ -154,7 +165,10 @@ function swapBitPair(v, p, q) {
     return (((v >> p) ^ (v >> q)) & 1) ? v ^ ((1 << p) | (1 << q)) : v;
 }
 
-/** FlashGBX's CFI parser (Flashcart.py CFI.Parse) for a 0x400-byte read. */
+/**
+ * Parse the chip's CFI table (its description of its own size, sectors and
+ * write buffer) from a 0x400-byte read. Follows FlashGBX's CFI.Parse.
+ */
 function parseCfi(raw) {
     if (!raw || raw.length < 0x400) return null;
     const b = Uint8Array.from(raw);
@@ -188,6 +202,8 @@ function parseCfi(raw) {
 
 // ------------------------------------------------- Burn2Slot fallback detection
 
+// The unlock addresses AMD-style chips use, in the six layouts carts wire
+// them in, and the two data-line orders some boards scramble D0-D15 into.
 const B2S_SEQS = [
     [0x555, 0x2AA, 0x555, 0x555, 0x2AA, 0x555],
     [0xAAA, 0x555, 0xAAA, 0xAAA, 0x555, 0xAAA],
@@ -195,7 +211,7 @@ const B2S_SEQS = [
     [0x5555, 0x2AAA, 0x5555, 0x5555, 0x2AAA, 0x5555],
     [0xAAAA, 0x5554, 0xAAAA, 0xAAAA, 0x5554, 0xAAAA],
     [0x1554, 0xAAA, 0x1554, 0x1554, 0xAAA, 0x1554],
-];   // word addresses
+];   // in 16-bit words, so doubled to get byte addresses
 const B2S_BUS1 = [15, 7, 14, 6, 13, 5, 12, 4, 0, 8, 1, 9, 2, 10, 3, 11];
 const B2S_BUS2 = [0, 8, 1, 9, 6, 14, 7, 15, 2, 10, 3, 11, 4, 12, 5, 13];
 
@@ -222,7 +238,7 @@ function b2sBusIn(bus, v) {
 const B2S_WIRING_NAMES = ["straight", "D0/D1 swapped", "data lines reordered (type 1)",
     "data lines reordered (type 2)", "8-bit, doubled", "8-bit, doubled, D0/D1 swapped"];
 
-/** A FlashGBX-shaped profile for an AMD-style chip found by Burn2Slot's scan. */
+/** Make a profile, in FlashGBX's format, for an AMD-style chip that Burn2Slot's scan found. */
 function b2sAmdProfile(seqType, bus, cfi, flashId) {
     const s = B2S_SEQS[seqType].map(w => w * 2);
     const v = (x) => b2sBusOut(bus, x);
@@ -247,8 +263,9 @@ function b2sAmdProfile(seqType, bus, cfi, flashId) {
         p.sector_size = cfi.bootFlag === 3 ? cfi.regions.slice().reverse() : cfi.regions;
         p.flash_size = cfi.deviceSize;
     } else {
-        // Burn2Slot's 64 KB erase step. Sectors may be bigger: erasing
-        // happens before any writing, so a sector erased twice loses nothing.
+        // No sector map, so erase every 64 KB like Burn2Slot does. If the
+        // real sectors are bigger some get erased twice, which is harmless
+        // because all erasing happens before any writing.
         p.sector_size = 0x10000;
     }
     return p;
@@ -258,8 +275,9 @@ function b2sAmdProfile(seqType, bus, cfi, flashId) {
 
 class GbaFlashcart {
     /**
-     * @param client  object with runOps(Uint8Array, timeoutMs, onWait) ->
-     *                Uint32Array (GbaCartClient, or a simulator in tests)
+     * @param client  anything with runOps(Uint8Array, timeoutMs, onWait)
+     *                returning a Uint32Array: a GbaCartClient, or a
+     *                simulator in the tests
      */
     constructor(client, { profiles = null, log = () => {} } = {}) {
         this.client = client;
@@ -279,9 +297,9 @@ class GbaFlashcart {
     async exec(prog, timeoutMs = 60000, onWait) {
         const buf = prog.build();
         let words;
-        // A run that fails on the link is sent again: every program is safe to
-        // repeat (erasing twice, or programming the same data twice, changes
-        // nothing on NOR flash).
+        // If the link garbles a run, send it again. Every program is safe to
+        // repeat: erasing twice, or writing the same data twice, changes
+        // nothing on flash memory.
         for (let attempt = 1; ; attempt++) {
             this._checkCancel();
             try {
@@ -335,8 +353,8 @@ class GbaFlashcart {
         const profiles = GbaFlashcart.flashableProfiles(this.profiles);
         this.detected = null;
 
-        // 1. Plain ROM, and the M29W640 check FlashGBX runs before anything
-        //    else (other profiles' commands can corrupt that chip).
+        // 1. Read the plain ROM, and check for the M29W640 chip first like
+        //    FlashGBX does, since other profiles' commands can corrupt it.
         let prog = new CartOpProgram();
         prog.show(CARTOP.SHOW_DETECT, 0);
         const romH = prog.rd16(0, 8);
@@ -358,9 +376,9 @@ class GbaFlashcart {
             }
         }
 
-        // 2. FlashGBX's ID scan: reset/unlock every profile, then run each
-        //    distinct read_identifier sequence and keep the ones that change
-        //    what address 0 reads.
+        // 2. FlashGBX's ID scan: reset and unlock with every profile's
+        //    commands, then try each different "read ID" command and keep
+        //    the ones that change what address 0 reads.
         const resets = [], groups = [];
         for (const p of profiles) {
             const c = p.commands;
@@ -408,7 +426,7 @@ class GbaFlashcart {
             return this._finishDetect(candidates, m.id, "FlashGBX profiles", methods);
         }
 
-        // 3. Nothing matched: Burn2Slot's scan.
+        // 3. Nothing matched: try Burn2Slot's scan.
         const b2s = await this._detectBurn2Slot(rom, profiles);
         if (b2s) return b2s;
 
@@ -448,7 +466,7 @@ class GbaFlashcart {
         return this.detected;
     }
 
-    /** FlashGBX's size tie-break for profiles sharing a flash ID. */
+    /** Pick between profiles that share a flash ID by chip size, as FlashGBX does. */
     async _pickBySize(candidates, cfi) {
         const first = candidates[0];
         if (first.flash_bank_select_type === 1) {
@@ -473,7 +491,8 @@ class GbaFlashcart {
             const p = candidates.find(p => p.flash_size === cfi.deviceSize);
             if (p) return p;
         }
-        // Mirror check: where does the header repeat?
+        // A small chip repeats itself across the address space, so the
+        // first place the header shows up again gives its size.
         const prog = new CartOpProgram();
         const head = prog.rd16(0xA0, 16);
         const probes = [];
@@ -486,7 +505,7 @@ class GbaFlashcart {
     }
 
     async _detectBurn2Slot(rom, profiles) {
-        // Intel-style first, as Burn2Slot does.
+        // Try Intel-style chips first, as Burn2Slot does.
         let prog = new CartOpProgram();
         prog.w16(0, 0xFF);
         prog.w16(0, 0x50);
@@ -511,9 +530,10 @@ class GbaFlashcart {
             }
         }
 
-        // AMD-style: every command-address layout and data wiring. A wrong
-        // attempt can leave the chip part-way into an unlock sequence, so
-        // each attempt starts with a reset (0xF0) in every wiring.
+        // Then AMD-style chips, with every address layout and data wiring.
+        // A wrong guess can leave the chip halfway through an unlock
+        // sequence, so each try starts by sending reset (0xF0) in every
+        // wiring.
         const resetAll = (prog) => {
             for (let bus = 0; bus < 6; bus++) prog.w16(0, b2sBusOut(bus, 0xF0));
         };
@@ -537,7 +557,8 @@ class GbaFlashcart {
             if (sameBytes(raw, rom.subarray(0, 4))) continue;
             const id = b2sBusIn(t.bus, raw[2] | (raw[3] << 8));
             if ((id >> 8) === 0x22 || id === 0x7E7E || id === 0x57 || id === 0xF8) {
-                // CFI through the same wiring: Burn2Slot's chipSize()
+                // Read the CFI table through the same wiring, as Burn2Slot's
+                // chipSize() does.
                 const out = (v) => b2sBusOut(t.bus, v);
                 const s = B2S_SEQS[t.seq];
                 const cfiRaw = await this._readCfi([[0, out(0x50)], [0, out(0xFF)], [0xAA, out(0x98)]],
@@ -559,7 +580,11 @@ class GbaFlashcart {
 
     // ------------------------------------------------------------ write plan
 
-    /** How the profile programs: method, unit, the payload's CFG words. */
+    /**
+     * Work out how to write with this profile: one word at a time or a
+     * buffer at a time, how many bytes per write, and the setup words the
+     * GBA needs (sent with the CFG op).
+     */
     static writePlan(p, cfi) {
         const c = p.commands;
         const set = GbaFlashcart.commandSet(p);
@@ -578,8 +603,8 @@ class GbaFlashcart {
         // Two interleaved chips (Flash2Advance) split each buffer between them.
         const chips = (cmds.some(x => x[0] === "SA+2")) ? 2 : 1;
         let bs = method === "single" ? 0 : unit / 2 / chips - 1;
-        // "double_die" carts put two 8-bit dies on the two byte lanes; each
-        // takes the count in its own lane.
+        // "double_die" carts have two 8-bit chips, one on each half of the
+        // data bus, so each gets the buffer size in its own byte.
         if (p.double_die) bs = (bs << 8) | bs;
         const srMask = p.status_register_mask !== undefined ? p.status_register_mask : 0x80;
         const srValue = p.status_register_value !== undefined ? p.status_register_value : 0x80;
@@ -622,7 +647,7 @@ class GbaFlashcart {
         return { method, unit, bs, cfg, bufferSize };
     }
 
-    /** Sector list [[offset, size], ...] covering `bytes`, or null (chip erase only). */
+    /** The sectors [[offset, size], ...] covering `bytes`, or null if the chip can only be erased whole. */
     static sectorList(p, cfi, bytes) {
         let map = p.sector_size;
         if ((map === undefined || p.sector_size_from_cfi) && p.commands.sector_erase) {
@@ -639,7 +664,7 @@ class GbaFlashcart {
             for (const [size, count] of map) {
                 for (let i = 0; i < count && pos < bytes; i++, pos += size) out.push([pos, size]);
             }
-            // A map that ends early (a smaller chip than the profile) keeps its last size.
+            // If the map runs out early, the remaining sectors repeat the last size.
             const last = map[map.length - 1][0];
             while (pos < bytes) { out.push([pos, last]); pos += last; }
         } else {
@@ -665,7 +690,7 @@ class GbaFlashcart {
         }
     }
 
-    /** Reset commands for the chip partition holding `addr`. */
+    /** Send the reset commands to the part of the chip that holds `addr`. */
     static _localReset(prog, p, addr) {
         const base = p.reset_every ? addr - (addr % p.reset_every) : 0;
         GbaFlashcart._writeCmds(prog, p.commands.reset, base);
@@ -714,9 +739,9 @@ class GbaFlashcart {
     // ------------------------------------------------------------ writing
 
     /**
-     * Write `rom` (Uint8Array) from flash offset 0, erasing only what it covers,
-     * plus (eraseRest) any sector past it in the GBA-visible space that isn't
-     * blank.
+     * Write `rom` (a Uint8Array) to the start of the flash. Only the sectors
+     * the ROM covers are erased, plus (with eraseRest) any sector after it,
+     * within the 32 MB the GBA can see, that isn't already blank.
      * opts: { profile, skipUnchanged = true, eraseRest = true,
      *         onProgress(done, total, phase) }
      * Returns { written, skipped, cleared, sectors, method, seconds }.
@@ -753,7 +778,7 @@ class GbaFlashcart {
             (plan.method === "single" ? "" : ` (${plan.unit}-byte buffer)`) +
             (sectors ? `, ${sectors.length} sector${sectors.length === 1 ? "" : "s"} to erase` : ", chip erase"));
 
-        // Start from a known state: reset every partition, unlock.
+        // Start from a known state: reset every part of the chip and unlock it.
         let prog = new CartOpProgram();
         this._selectBank(prog, p, 0);
         GbaFlashcart._fullReset(prog, p, capacity);
@@ -772,7 +797,7 @@ class GbaFlashcart {
         };
         const bankOf = (off) => Math.floor(off / bankSize);
 
-        // Which sectors need work?
+        // Skip sectors whose checksum already matches the ROM.
         let todo = sectors ? sectors.slice() : null;
         let skipped = 0;
         if (todo && skipUnchanged) {
@@ -799,11 +824,11 @@ class GbaFlashcart {
             if (skipped) this.log(`${skipped} sector${skipped === 1 ? " already holds" : "s already hold"} the right data — skipping.`);
         }
 
-        // Old data past the ROM (from a bigger ROM written earlier) would be
-        // dumped as part of this one. Erase whatever isn't blank in the rest
-        // of the space the GBA sees; other banks of a multi-game cart stay.
-        // Needs the chip size: past the end, a chip reads as a mirror of
-        // its start.
+        // Leftovers from a bigger ROM written earlier would end up in a dump
+        // of this one, so erase anything after the ROM that isn't blank.
+        // Only the first 32 MB is touched; other banks of a multi-game cart
+        // are left alone. This needs the chip size, because past its end a
+        // chip reads as a copy of its start.
         let cleared = 0;
         if (todo && opts.eraseRest !== false && !chipSize) {
             this.log("The chip size is unknown, so data after the ROM is left as it is.");
@@ -836,7 +861,6 @@ class GbaFlashcart {
             }
         }
 
-        // Erase.
         if (todo) {
             for (let i = 0; i < todo.length;) {
                 this._checkCancel();
@@ -863,7 +887,7 @@ class GbaFlashcart {
             await this._chipErase(p);
         }
 
-        // Write + verify, 64 KB per run.
+        // Write and check, 64 KB per program, never crossing a bank.
         const ranges = [];
         const addRange = (start, end) => {
             for (let a = start; a < end;) {
@@ -874,7 +898,7 @@ class GbaFlashcart {
             }
         };
         if (todo) {
-            // merge contiguous sectors, clipped to the image
+            // Join neighbouring sectors, stopping at the end of the ROM.
             let cur = null;
             for (const s of todo) {
                 const start = s[0], end = Math.min(s[0] + s[1], total);
@@ -894,7 +918,7 @@ class GbaFlashcart {
             const data = image.subarray(start, start + n);
             const ok = await this._writeRange(p, plan, bankSize, start, data, (done + n) / totalBytes * 100);
             if (!ok) {
-                // One retry: erase the failing sector(s) again and rewrite them.
+                // Try once more: erase the bad sectors again and rewrite them.
                 const redo = sectors ? sectors.filter(s => s[0] < start + n && s[0] + s[1] > start) : null;
                 if (!redo) {
                     await this._showFail();
@@ -939,11 +963,12 @@ class GbaFlashcart {
     }
 
     /**
-     * The chip's size: the profile's, or what the chip reports (CFI). Some
-     * boards carry a bigger chip than their profile lists; the chip's own
-     * size is used then, unless the space past the listed size reads as a
-     * copy of the start or as open bus (the address), or the start is blank
-     * so that can't be told.
+     * The chip's size: the profile's, or what the chip itself reports (CFI).
+     * Some boards carry a bigger chip than their profile lists, and then the
+     * chip's own size is used. The listed size wins if the space past it
+     * reads as a copy of the start, or as nothing connected (the GBA then
+     * reads back the address itself), or if the start is blank so there is
+     * no way to tell.
      */
     async _chipSize(p, cfi) {
         const listed = p.flash_size, reported = cfi && cfi.deviceSize;
@@ -961,7 +986,7 @@ class GbaFlashcart {
         return reported;
     }
 
-    /** FlashGBX's ReadCFI, for a profile picked without detection. */
+    /** Read the CFI table for a profile the user picked by hand, like FlashGBX's ReadCFI. */
     async _readProfileCfi(p) {
         const set = GbaFlashcart.commandSet(p);
         const readCfi = p.commands.read_cfi ||
@@ -1003,7 +1028,7 @@ class GbaFlashcart {
         }
     }
 
-    /** Program and verify one range inside a bank. false = verify mismatch. */
+    /** Write and check one range inside a bank. Returns false if the check fails. */
     async _writeRange(p, plan, bankSize, start, data, pct) {
         const addr = start % bankSize;
         const prog = new CartOpProgram();

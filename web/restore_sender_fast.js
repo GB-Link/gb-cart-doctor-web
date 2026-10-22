@@ -1,43 +1,51 @@
 /**
- * Fast GBC SRAM Restore Sender
+ * Writes a .sav file back into a GB/GBC cartridge's save RAM.
  *
- * Inverse of FastDumpReceiver: writes a .sav back into the cartridge's SRAM.
- * The GBC payload (payload_fast.asm, SELECT branch) announces a restore with
- * a header, then receives each 256-byte section + checksum and writes it to
- * SRAM, ACKing OK/FAIL. We are the SPI master and clock every byte.
+ * This is the dump in reverse (see dump_receiver_fast.js). The GBC payload
+ * first sends a 4-byte header:
+ *   0xF5, transfer type (3 = restore), the cart's RAM size code, checksum
+ * The page then sends the save in 256-byte sections, each followed by a
+ * checksum byte (all 256 bytes XORed together). The GBC writes each section
+ * to the cart and answers 0x01 (OK) or 0x00 (damaged, send it again).
  *
- * Header (GBC -> us): [MAGIC=0xF5, type=3 (RESTORE), size_index, checksum]
- * Section (us -> GBC): [256 data bytes, XOR checksum] ; GBC replies OK/FAIL
+ * The restore starts when SELECT is pressed on the GBA, or, if `trigger` is
+ * set, when the page sends that command byte (CMD_RESTORE). The page keeps
+ * sending it until the header arrives. To cancel, the page sends a section
+ * with the wrong checksum 0xCA, which sends the GBA back to its menu.
  *
- * Direction note: GB link SPI is bidirectional. On the data bytes we care
- * about what WE send (the inbound byte is the GBC's echo and is ignored); on
- * the ACK we care about what the GBC sends back.
+ * Every byte sent over the link swaps with a byte from the GBC. While sending
+ * section data the bytes coming back mean nothing and are thrown away; only
+ * the GBC's OK/damaged answer is read.
  */
 
 const RESTORE_MAGIC = 0xF5;
 const RESTORE_TRANSFER = 3;           // matches rRESTORE_TRANSFER in payload_fast.asm
-const RESTORE_SECTION_SIZE = 0x100;   // 256 bytes per section
+const RESTORE_SECTION_SIZE = 0x100;   // bytes per section
 const RESTORE_OK = 0x01;
 const RESTORE_FAIL = 0x00;
+const RESTORE_ABORT = 0xCA;           // the payload's CMD_ABORT
 
-// SRAM size-index tables — must match the dump side (dump_receiver_fast.js)
-// and the cart's header byte $0149.
+// Save sizes for each RAM size code (cartridge header byte $0149). These
+// must match the tables in dump_receiver_fast.js.
 const RESTORE_SRAM_BANK_SIZES = [0, 8, 0x20, 0x20, 0x20, 0x20, 2];
 const RESTORE_SRAM_BANKS = [0, 1, 1, 4, 16, 8, 1];
 
 class FastRestoreSender {
-    constructor(usb, saveData, log = console.log) {
+    constructor(usb, saveData, log = console.log, { trigger = null, headerTimeoutMs = 0 } = {}) {
         this.usb = usb;
-        this.saveData = saveData;      // Uint8Array of the .sav to write
+        this.saveData = saveData;      // the .sav file's bytes
         this.log = log;
         this.cancelled = false;
+        this.trigger = trigger;
+        this.headerTimeoutMs = headerTimeoutMs;
+        this.timedOut = false;
     }
 
     cancel() {
         this.cancelled = true;
     }
 
-    // Total SRAM bytes implied by a size index (for matching the loaded file).
+    // The save size in bytes for a RAM size code, to check the file against.
     static expectedBytesForSizeIndex(sizeIdx) {
         const sectionsPerBank = RESTORE_SRAM_BANK_SIZES[sizeIdx] || 0;
         const banks = RESTORE_SRAM_BANKS[sizeIdx] || 0;
@@ -50,12 +58,12 @@ class FastRestoreSender {
         return rx.length > 0 ? rx[0] : 0;
     }
 
-    // Send a batch and discard the inbound echo (used for section data).
+    // Send bytes and throw away the bytes that come back.
     async spiSendBatch(txBytes) {
         const tx = txBytes instanceof Uint8Array ? txBytes : new Uint8Array(txBytes);
         await this.usb.writeBytes(tx);
-        // Drain the matching number of echo bytes so reads stay aligned with
-        // sends — same balance rule as the dump path.
+        // Still read one byte back for every byte sent, or later reads
+        // would pick up these leftover bytes.
         let drained = 0;
         while (drained < tx.length) {
             const rx = await this.usb.readBytesRaw(tx.length - drained, 10000);
@@ -65,15 +73,22 @@ class FastRestoreSender {
         return true;
     }
 
-    // Poll until the GBC announces the restore header, validate it, and ACK.
-    // Returns { sizeIdx } on success, or { error } / null.
+    // Wait for the GBC's restore header, check it, and accept it.
+    // Returns { sizeIdx } on success, { error } if refused, or null if
+    // cancelled or timed out.
     async readHeader() {
-        this.log("Waiting for restore to start (press SELECT on the GBA)...");
+        if (this.trigger === null) this.log("Waiting for restore to start (press SELECT on the GBA)...");
+        const started = Date.now();
 
         while (!this.cancelled) {
-            const rx = await this.spiExchange(0x00);
+            const out = this.trigger !== null ? this.trigger : 0x00;
+            if (this.headerTimeoutMs && Date.now() - started > this.headerTimeoutMs) {
+                this.timedOut = true;
+                return null;
+            }
+            const rx = await this.spiExchange(out);
             if (rx !== RESTORE_MAGIC) {
-                continue; // GBC still in init (SB=0x10) — keep polling
+                continue; // the restore hasn't started yet
             }
 
             const type = await this.spiExchange(0x00);
@@ -87,16 +102,15 @@ class FastRestoreSender {
                 continue;
             }
             if (type !== RESTORE_TRANSFER) {
-                // The cart entered a dump (A/B/START) instead of a restore
-                // (SELECT). Refuse rather than clobber the save.
+                // The GBA started a dump instead of a restore. Refuse it so
+                // nothing gets written to the save.
                 this.log(`Expected a restore but the GBA started a dump (type ${type}). Press SELECT, not A/B/START.`, "error");
                 await this.spiExchange(RESTORE_FAIL);
                 return { error: "not-restore" };
             }
 
-            // Validate the loaded file against the cart's SRAM size BEFORE we
-            // OK the header — NAK (loop) if it doesn't match so we never write
-            // a mismatched save into a real battery.
+            // Check the file is the same size as the cart's save before
+            // accepting the header, so a wrong file is never written.
             const expectedBytes = FastRestoreSender.expectedBytesForSizeIndex(sizeIdx);
             if (expectedBytes === 0) {
                 this.log(`Cart reports no SRAM (size index ${sizeIdx}) — nothing to restore.`, "error");
@@ -115,27 +129,32 @@ class FastRestoreSender {
         return null;
     }
 
-    // Send one 256-byte section + checksum, then read the GBC's OK/FAIL.
-    // Returns true if accepted, false if the GBC asked for a resend.
+    // Send one section and its checksum, then read the GBC's answer.
+    // Returns true if accepted, false if the GBC asked for it again.
     async sendSection(offset) {
         const section = this.saveData.subarray(offset, offset + RESTORE_SECTION_SIZE);
         let checksum = 0;
         for (let i = 0; i < section.length; i++) checksum = (checksum ^ section[i]) & 0xFF;
 
-        // Send the 256 data bytes in sub-64-byte chunks (USB max packet),
-        // discarding echoes — same chunking the dump path uses.
+        // Send the data in pieces small enough for one 64-byte USB packet each.
         const CHUNK = 56;
         for (let i = 0; i < RESTORE_SECTION_SIZE; i += CHUNK) {
-            if (this.cancelled) return false;
             const ok = await this.spiSendBatch(section.subarray(i, Math.min(i + CHUNK, RESTORE_SECTION_SIZE)));
             if (!ok) return false;
         }
 
-        // Send the checksum byte (its echo is drained), then clock one more
-        // exchange whose RETURN byte is the GBC's OK/FAIL verdict on the section.
+        // Send the checksum byte, then one more byte: what comes back for
+        // that one is the GBC's answer for this section.
         await this.spiSendBatch(new Uint8Array([checksum]));
         const ack = await this.spiExchange(0x00);
         return ack === RESTORE_OK;
+    }
+
+    // Stop a restore in progress: a section with the wrong checksum 0xCA
+    // sends the GBA back to its menu.
+    async abort() {
+        await this.spiSendBatch(new Uint8Array(RESTORE_SECTION_SIZE));
+        await this.spiSendBatch(new Uint8Array([RESTORE_ABORT]));
     }
 
     async sendRestore(onProgress = null) {
@@ -151,17 +170,23 @@ class FastRestoreSender {
 
         let sectionsSent = 0;
         for (let offset = 0; offset < totalBytes; offset += RESTORE_SECTION_SIZE) {
-            if (this.cancelled) return null;
+            if (this.cancelled) {
+                await this.abort();
+                return null;
+            }
 
-            // Retry the section until the GBC accepts it (checksum match), but
-            // cap the attempts. A genuine checksum NAK clears in a retry or two;
-            // a long run of failures means a hard timeout / desync, where the
-            // byte stream can no longer be realigned by resending — bail instead
-            // of spinning forever (and writing more garbage into the battery).
+            // Resend the section until the GBC accepts it, up to a limit. A
+            // damaged section normally gets through on the next try. Many
+            // failures in a row mean the two sides have lost track of where
+            // they are, and resending won't fix that, so stop rather than
+            // keep writing bad data into the save.
             const MAX_SECTION_RETRIES = 8;
             let accepted = false;
             for (let attempt = 0; attempt < MAX_SECTION_RETRIES && !accepted; attempt++) {
-                if (this.cancelled) return null;
+                if (this.cancelled) {
+                    await this.abort();
+                    return null;
+                }
                 accepted = await this.sendSection(offset);
                 if (!accepted) {
                     this.log(`Section at 0x${offset.toString(16)} rejected — resending (attempt ${attempt + 1}/${MAX_SECTION_RETRIES})...`, "error");

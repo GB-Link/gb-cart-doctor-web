@@ -5,11 +5,10 @@
 	be read from or written to the cartridge.
 	Data types are from wintermute's gba_types.h libgba library.
 	Original file from SendSave by Chishm
-	Taken unchanged from wii-gba-link-cable-dumper (FIX94, MIT), except:
-	the per-block EEPROM settle loops used a non-volatile counter, which
-	-O3 deletes — the shipped original effectively ran without them. They
-	are kept as short volatile settle gaps only; write completion is
-	already awaited via REG_EEPROM bit 0 after every packet.
+	Taken from wii-gba-link-cable-dumper (FIX94, MIT). One change: the
+	short pause after each EEPROM block uses a volatile counter, so the
+	compiler can't remove it. Writes still wait for the EEPROM to say it
+	has finished after every block.
 */
 
 #include <stdio.h>

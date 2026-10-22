@@ -311,31 +311,23 @@ int main(void)
     reset_affine_registers();
     reset_mosaic();
 
-    // User configuration menu
-
-    // enter_menu();
-
     update_affine_registers();
     update_mosaic();
     load_menu();
 
-    // Reset all registers to the values expected when switching to GBC mode
-
+    // Put the hardware registers in the state GBC mode expects
     prepare_registers();
 
-    // Do funny stuff here with the IO registers
-
-    // It is strange, when pressing L to stretch the screen, it seems that BG2
-    // affine transformation is ignored.  When pressing R again, the affine
-    // transformation is applied again.
-
+    // Then apply the screen scaling, mosaic and green swap settings on top.
+    // The scaling doesn't always take: after pressing L to stretch the
+    // screen, the BG2 scaling is ignored until R is pressed again.
     refresh_affine_registers();
     update_mosaic();
     *((u16*)0x04000002) = greenswap;
 
     REG_BG2CNT |= BG_MOSAIC;
 
-    // Actually switch
+    // Switch to GBC mode
     print_switching_info();
     run_in_VRAM(delayed_switch2gbc, 0x1000);
 

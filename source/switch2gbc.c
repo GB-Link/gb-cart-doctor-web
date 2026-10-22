@@ -36,8 +36,7 @@ ALWAYS_INLINE void SWI_CpuSet(const void *src, void *dst, uint32_t len_mode)
 
 void prepare_registers(void)
 {
-    // Reset all I/O to default values
-
+    // Reset all I/O registers to their power-on values
     *((u16*)0x04000002) = 0; // GREENSWAP
 
     REG_BG0CNT = 0; REG_BG1CNT = 0; REG_BG3CNT = 0;
@@ -71,9 +70,7 @@ void prepare_registers(void)
 
     REG_KEYCNT = 0;
 
-    //REG_WAITCNT = ???
-
-    // Do BIOS configuration...
+    // Then set what the BIOS sets before it starts a GBC game
 
     BG_PALETTE[0] = 0x0000;
     BG_PALETTE[1] = 0x7FFF;
@@ -113,13 +110,6 @@ IWRAM_CODE void delayed_switch2gbc(void)
         iwram_8[i * 4] = gbc_payload[i];
     }
 
-    // VBlank per second about 60
-    //for (int i = 0; i < 60 * 10; i++)
-    //{   
-    //    while(REG_VCOUNT >= 160);   // wait till VDraw
-    //    while(REG_VCOUNT < 160);    // wait till VBlank
-    //}
-
     BG_PALETTE[0] = 0x0000;
     BG_PALETTE[1] = 0x7FFF;
     
@@ -130,19 +120,16 @@ IWRAM_CODE void delayed_switch2gbc(void)
 
     REG_IME = 0;
     
-    // Write 0x0408 to DISPCNT = 0x0408: Mode 0, GBC mode enabled, BG2 enabled
+    // DISPCNT = 0x0408: mode 0, GBC mode on, BG2 on
     uint16_t* GBC_DISPCNT_VALUE = (uint16_t*)0x6007FFC;
     *GBC_DISPCNT_VALUE = 0x408;
 
-    // GBC mode bit can only be modified from BIOS, like from inside CpuSet()
-    // Copy 1 halfword, 16 bit mode
+    // Only BIOS code may set the GBC mode bit, so have the BIOS CpuSet
+    // routine copy that one halfword into DISPCNT
     SWI_CpuSet(GBC_DISPCNT_VALUE, (void *)(REG_BASE + 0), 1);
     
-    // Normal boot, black screen with jingle
-    //*(vu32*)0x4000800 = 0x0D000000 | 0x20;
-    //SWI_Halt();
-
-    // BIOS swapped boot, white screen  no jingle
+    // Start GBC mode with the "cartridge swapped" boot: a white screen and
+    // no boot jingle (without the 8 it shows a black screen and plays it)
     *(vu32*)0x4000800 = 0x0D000000 | 0x20 | 8;
     SWI_Halt();
 }

@@ -1,8 +1,9 @@
 /**
- * Flash cart writing, end to end without hardware: the real web/gba_flash.js
- * (detection, erase/write plan) drives the real GBA cart op interpreter
- * (source/gba_cart_dumper/source/cartops.c, compiled natively) against
- * simulated flash chips (web/test/flashsim/flashsim.c).
+ * Tests writing GBA flash carts without hardware. The page's real code
+ * (web/gba_flash.js), which detects the chip and plans the erases and writes,
+ * drives the dumper's real cart operations (source/gba_cart_dumper/source/
+ * cartops.c, built for the PC) against simulated flash chips from
+ * web/test/flashsim/flashsim.c.
  *
  * Run:  node web/test/flashcart_test.mjs [filter]
  * Needs a C compiler (cc).
@@ -27,7 +28,10 @@ execFileSync("cc", ["-O2", "-Wall", "-DCARTOPS_SIM", `-I${join(here, "flashsim")
     join(here, "flashsim", "flashsim.c"),
     join(here, "..", "..", "source", "gba_cart_dumper", "source", "cartops.c")], { stdio: "inherit" });
 
-/** Talks to one flashsim process; implements the client's runOps(). */
+/**
+ * Runs one flashsim process. Offers runOps() like the page's GBA client,
+ * plus calls to read back the chip and its counters.
+ */
 class SimCart {
     constructor(args) {
         this.proc = spawn(simBin, args, { stdio: ["pipe", "pipe", "inherit"] });
@@ -84,7 +88,8 @@ function makeRom(size, seed) {
         x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
         rom[i] = x & 0xFF;
     }
-    // padding like a real ROM, so erased-unit skipping is exercised
+    // A blank (0xFF) stretch like a real ROM's padding, so skipping blank
+    // areas gets tested.
     if (size > 0x60000) rom.fill(0xFF, 0x40000, 0x50000);
     return rom;
 }
@@ -93,9 +98,9 @@ const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
 /**
- * Detect, write, read back. `expect` is the profile id detection must pick.
- * Then write the same ROM again (every sector should be skipped), and a ROM
- * with one byte changed (one sector rewritten).
+ * Detect the chip, write a ROM and read it back. `expect` is the profile id
+ * detection must pick. Then write the same ROM again, which should skip every
+ * sector, and a copy with one byte changed, which should rewrite one sector.
  */
 async function roundTrip(args, expect, romSize, { rewrite = true, check, chipsPerSector = 1 } = {}) {
     const cart = new SimCart(args);
@@ -219,8 +224,8 @@ test("old data after the ROM is erased, other banks are left alone", async () =>
     }
 });
 
-// BX2006_TSOPBGA_0106: FlashGBX lists 8 MB, the chip is 16 MB (CFI says so,
-// and the GBA sees separate data at 8-16 MB).
+// The BX2006_TSOPBGA_0106 board: FlashGBX lists it as 8 MB, but its chip is
+// 16 MB. CFI says so, and the GBA reads different data from 8 to 16 MB.
 test("M29W640 board with a 16 MB chip: old data past 8 MB is erased too", async () => {
     const cart = new SimCart(["type=amd", "wiring=d01", "mfr=0x20", "dev=0x227E", "size=0x1000000", "sector=0x10000", "buf=64"]);
     try {

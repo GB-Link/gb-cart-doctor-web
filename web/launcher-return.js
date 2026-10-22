@@ -1,8 +1,6 @@
-// launcher-return.js
-// Shows a small "Return to launcher" button when this client was opened from the
-// GB Link launcher (URL contains ?from=gblink-launcher). Self-contained: no deps,
-// no external CSS. Safe to load from any framework — it appends a fixed-position
-// element to <body> after load.
+// Shows a small "Launcher" button in the corner when this page was opened from
+// the GB Link launcher (the URL has ?from=gblink-launcher). Needs no other
+// scripts or styles; it just adds one fixed-position link to <body>.
 (function () {
   var LAUNCHER_URL = 'https://launcher.gblink.io';
   var FROM_KEY = 'from';

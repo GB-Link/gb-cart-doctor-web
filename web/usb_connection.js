@@ -1,7 +1,7 @@
 /**
- * USB Connection for WebUSB
- * Supports both old (reconfigurable) and new (GBLink unified) firmware.
- * Based on gblink-multiboot-web/usb_connection.js
+ * Connects to the GB-Link over WebUSB. Works with both the old
+ * (reconfigurable) and the new (unified) firmware.
+ * Based on gblink-multiboot-web/usb_connection.js.
  */
 
 function fwVersionAtLeast(device, minMajor, minMinor, minPatch) {

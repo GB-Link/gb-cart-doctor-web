@@ -1,25 +1,29 @@
 /**
- * GBA cartridge protocol driver for GBLink Cart Doctor.
+ * Talks to the GBA cart dumper (web/gba-cart-dumper_mb.gba, source in
+ * source/gba_cart_dumper/) once it is running on the GBA. The dumper is a
+ * port of FIX94's GBA Link Cable Dumper that uses the normal 32-bit link
+ * cable mode instead of the GameCube port. The GB-Link stays in the same
+ * mode and timing it used to send the dumper (36 µs between words, 4 bytes
+ * per word) at the GBA's own 3.3 V; the 5 V needed for GBC carts doesn't
+ * apply here.
  *
- * Host side of the SIO32 protocol spoken by web/gba-cart-dumper_mb.gba
- * (source/gba_cart_dumper/) — a port of FIX94's GBA Link Cable Dumper whose
- * JOY-bus link is replaced with 32-bit normal-mode SIO. The firmware stays in
- * GB_LINK mode with the multiboot timing config (36 µs between words, 4 bytes
- * per transfer) and 3.3V — the GBA-native serial level; the 5V requirement of
- * the GBC-mode dump does not apply here.
+ * Every transfer swaps one 32-bit word each way: we send a word and get back
+ * whatever the GBA had loaded into its serial register beforehand. While the
+ * GBA is busy with the cartridge it loads nothing, and we read 0xFFFFFFFF.
  *
- * Every transaction is one full-duplex 32-bit exchange: we send a word, we
- * receive whatever the payload had pre-armed. While the payload is busy with
- * the cartridge it is un-armed and we read a constant 0xFFFFFFFF ("busy").
- * Slow phases end with a DONE gate (payload re-arms G_DONE until it receives
- * M_CONT) so a word torn by arming mid-clock can never advance the protocol.
- * Bulk data moves in 256-byte sections, each closed by an XOR32 checksum and
- * a verdict exchange; bad sections are re-sent. ROM dumps instead use a
- * record stream with no per-section round trip (_streamRecords).
+ * Slow jobs (probing the cart, reading the save) end with the GBA repeating
+ * G_DONE until we answer M_CONT. That way a word that got cut in half while
+ * the GBA was loading it can never move things along by mistake.
+ *
+ * Bulk data moves in 256-byte sections. Each ends with an XOR checksum, then
+ * one more exchange to say whether it arrived intact; a bad section is sent
+ * again. ROM dumps use a faster stream of records instead (_streamRecords).
  */
 
 "use strict";
 
+// Words starting M_ are sent by the page; words starting G_ are the GBA's
+// answers. Most of them spell something in ASCII ("REDY", "DONE", "OKOK").
 const GBA_CART = {
     M_MAGIC: 0x47420000,
     M_POLL: 0x00000000,
@@ -34,7 +38,9 @@ const GBA_CART = {
     G_FAIL: 0x4641494C,
     BUSY: 0xFFFFFFFF,
 
-    // ROM dump record stream (see streamRom in main.c)
+    // ROM dump stream: the GBA sends records tagged R_DATA (one section),
+    // R_FILL (a run of sections that repeat one word) or R_END. M_SEEK asks
+    // it to restart from a given section. See streamRom in main.c.
     M_SPOLL: 0x47425EED,
     M_FIN: 0x4742F1A1,
     M_SEEK: 0x53000000,
@@ -54,12 +60,12 @@ const GBA_CART = {
     SECTION_BYTES: 0x100,
     SECTION_WORDS: 0x40,
     BIOS_BYTES: 0x4000,
-    RUN_MAX_BYTES: 0x20000,    // payload's op buffer (its save buffer)
-    RUN_RESULT_BYTES: 0x4000,  // payload's result buffer
+    RUN_MAX_BYTES: 0x20000,    // largest cart op program the GBA can hold
+    RUN_RESULT_BYTES: 0x4000,  // largest result it can send back
 };
 
-// Max words per USB write: 14 × 4 = 56 bytes, same convention as multiboot.js
-// (below the 64-byte endpoint/frame cap on both WebUSB and WebSerial).
+// Most words per USB write: 14 × 4 = 56 bytes, as in multiboot.js. That stays
+// under the 64-byte USB packet limit on both WebUSB and WebSerial.
 const GBA_BATCH_WORDS = 14;
 
 class GbaCartError extends Error {
@@ -95,8 +101,8 @@ class GbaCartClient {
     }
 
     /**
-     * Exchange a batch of 32-bit words (lockstep: one USB write, then read
-     * back exactly as many response bytes). Splits into 14-word USB writes.
+     * Send a list of words and return the GBA's reply to each. Each USB write
+     * of up to 14 words is followed by reading back the same number of bytes.
      */
     async _xferBatch(words) {
         const results = [];
@@ -112,8 +118,8 @@ class GbaCartClient {
             }
             await this.usb.writeBytes(tx);
 
-            // The firmware answers each write with the same number of bytes,
-            // possibly split across USB packets/frames — accumulate.
+            // The reply can arrive split over several USB packets, so keep
+            // reading until it is all here.
             const expected = chunk.length * 4;
             const rx = new Uint8Array(expected);
             let got = 0;
@@ -139,10 +145,11 @@ class GbaCartClient {
     }
 
     /**
-     * Hunt for the idle payload. Sends polls until G_READY comes back.
-     * Converges from any stale state: a stuck DONE gate is kicked with
-     * M_ABORT, and a payload abandoned mid-stream runs out of its section
-     * within ~66 polls and aborts itself on the unexpected verdict word.
+     * Poll until the GBA says it is idle and ready (G_READY). This works from
+     * any leftover state: if the GBA is stuck repeating G_DONE we send
+     * M_ABORT, and if it was left halfway through sending a section it
+     * finishes within about 66 polls, sees a poll where it expected our
+     * answer, and gives up on its own.
      */
     async _pollReady(timeoutMs = 10000) {
         const deadline = Date.now() + timeoutMs;
@@ -158,10 +165,10 @@ class GbaCartClient {
     }
 
     /**
-     * Deliver a command with the echo-confirm handshake. The response to the
-     * command word must be G_READY (proves the payload was armed and received
-     * it); the response to M_GO must be the bitwise-NOT echo (proves it
-     * decoded the right command). Payload acts only on M_GO.
+     * Send a command and make sure the GBA got it. The reply to the command
+     * word must be G_READY, which shows the GBA was listening. The reply to
+     * the following M_GO must be the command word with every bit flipped,
+     * which shows it read the right command. The GBA only starts on M_GO.
      */
     async _command(cmd, readyTimeoutMs = 10000) {
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -171,18 +178,16 @@ class GbaCartClient {
             if (r1 !== GBA_CART.G_READY) continue;
             const r2 = await this._xfer(GBA_CART.M_GO);
             if (r2 === this._echoWord(cmd)) return;
-            // Wrong echo: the payload never saw the command (or saw a torn
-            // word) — our M_GO read as a stray control word and it is idle
-            // again. Just retry.
+            // Wrong reply: the GBA missed the command or got a garbled copy,
+            // ignored our M_GO and is idle again. Just try again.
         }
         throw new GbaCartError("desync", "Command handshake failed after retries");
     }
 
     /**
-     * Wait out a slow payload phase (cart probe, save read, save write...).
-     * The payload is un-armed (busy) until it opens the DONE gate; we
-     * acknowledge with M_CONT which is its cue to start the next lockstep
-     * phase.
+     * Wait for a slow job on the GBA to finish (probing the cart, reading or
+     * writing the save). The GBA reads as busy until it starts repeating
+     * G_DONE; we answer M_CONT, which tells it to carry on with the next step.
      */
     async _waitDone(timeoutMs, onWait) {
         const started = Date.now();
@@ -203,15 +208,16 @@ class GbaCartClient {
         throw new GbaCartError("timeout", "Timed out waiting for the GBA");
     }
 
-    /** Read `count` payload-armed words by clocking polls. */
+    /** Read `count` words from the GBA by sending that many polls. */
     async _readWords(count) {
         return this._xferBatch(new Array(count).fill(GBA_CART.M_POLL));
     }
 
     /**
-     * Receive `totalBytes` (multiple of 256) from the payload. Per section:
-     * 64 data words + XOR32, then our verdict (M_CONT/M_FAIL). The payload
-     * checks every received word for M_ABORT, so cancel is immediate.
+     * Receive `totalBytes` (a multiple of 256) from the GBA. Each section is
+     * 64 data words and an XOR checksum, then we answer M_CONT if it checked
+     * out or M_FAIL to have it sent again. The GBA stops as soon as it sees
+     * M_ABORT, so cancelling takes effect right away.
      */
     async _streamIn(totalBytes, onProgress) {
         const out = new Uint8Array(totalBytes);
@@ -253,11 +259,12 @@ class GbaCartClient {
     }
 
     /**
-     * Receive the ROM dump record stream: `totalBytes` as 256-byte sections,
-     * each sent as a data record or, for runs of sections that hold one
-     * repeated word, a single fill record. Records are accepted strictly in
-     * order; on a bad record we seek the payload back to the first missing
-     * section in our next batch and ignore everything until its header.
+     * Receive a ROM dump. The GBA sends `totalBytes` as 256-byte sections
+     * without waiting for us: each one as a data record, or a run of sections
+     * that repeat one word as a single fill record. We take records strictly
+     * in order. When one is bad or missing, the next batch starts with
+     * M_SEEK to send the GBA back to the first section we still need, and we
+     * skip everything until that section's record arrives.
      */
     async _streamRecords(totalBytes, onProgress) {
         const C = GBA_CART;
@@ -267,7 +274,7 @@ class GbaCartClient {
         const rotl1 = (c) => ((c << 1) | (c >>> 31)) >>> 0;
         let next = 0;      // first section we don't have yet
         let rec = null;    // record being collected: { header, words, need }
-        let seek = false;  // open the next batch with M_SEEK|next
+        let seek = false;  // start the next batch with M_SEEK | next
         let failures = 0;  // bad records since the last good one
 
         const fail = () => {
@@ -313,7 +320,8 @@ class GbaCartClient {
             const tx = new Array(GBA_BATCH_WORDS).fill(C.M_SPOLL);
             let first = 0;
             if (seek) {
-                // The reply to the seek word itself is still the old stream.
+                // The reply to the seek word itself still comes from the old
+                // position, so skip it.
                 tx[0] = (C.M_SEEK | next) >>> 0;
                 first = 1;
                 seek = false;
@@ -346,10 +354,10 @@ class GbaCartClient {
     }
 
     /**
-     * Send `data` (length multiple of 256) to the payload. Per section: 64
-     * data words + our XOR32, then one ack exchange that simultaneously
-     * returns the payload's verdict (G_OKOK/G_FAIL) and carries our M_CONT
-     * ("proceed per your verdict") or M_ABORT.
+     * Send `data` (a multiple of 256 bytes) to the GBA. Each section is 64
+     * data words and our XOR checksum. One more exchange follows: we send
+     * M_CONT (or M_ABORT to cancel) and get back G_OKOK if the section
+     * arrived intact or G_FAIL if it needs sending again.
      */
     async _streamOut(data, onProgress) {
         const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -389,7 +397,7 @@ class GbaCartClient {
         }
     }
 
-    /** True if the payload answers from its idle loop within timeoutMs. */
+    /** True if the GBA dumper answers as idle within timeoutMs. */
     async ping(timeoutMs = 3000) {
         try {
             await this._pollReady(timeoutMs);
@@ -401,12 +409,12 @@ class GbaCartClient {
     }
 
     /**
-     * Probe the cartridge: sizes + the 0xC0-byte header. Returns
-     * { noCart } or { gamesize, savesize, title, code, maker, header }.
+     * Read the cartridge's ROM and save sizes and its 0xC0-byte header.
+     * Returns { noCart } or { gamesize, savesize, title, code, maker, header }.
      */
     async readInfo() {
         await this._command(GBA_CART.CMD_INFO);
-        await this._waitDone(60000); // full ROM scan + possible EEPROM probe
+        await this._waitDone(60000); // ROM size scan, and EEPROM size if there is one
         const sizes = await this._readWords(2);
         const gamesize = sizes[0], savesize = sizes[1];
         if (gamesize === 0xFFFFFFFF) return { noCart: true };
@@ -439,7 +447,7 @@ class GbaCartClient {
     /** Dump the full cartridge ROM. Returns { data, gamesize }. */
     async dumpRom(onProgress) {
         await this._command(GBA_CART.CMD_DUMP_ROM);
-        await this._waitDone(60000); // ROM size probe + scan for fill runs
+        await this._waitDone(60000); // ROM size, and a scan for runs of repeated data
         const sizes = await this._readWords(1);
         const gamesize = sizes[0];
         if (gamesize === 0xFFFFFFFF) {
@@ -452,7 +460,7 @@ class GbaCartClient {
     /** Dump the cartridge save. Returns { data, savesize }. */
     async dumpSave(onProgress) {
         await this._command(GBA_CART.CMD_DUMP_SAVE);
-        await this._waitDone(60000); // size probe incl. possible EEPROM read
+        await this._waitDone(60000); // sizes, which can mean reading an EEPROM
         const sizes = await this._readWords(2);
         if (sizes[0] === 0xFFFFFFFF) {
             throw new GbaCartError("no-cart", "No GBA cartridge detected");
@@ -461,7 +469,7 @@ class GbaCartClient {
         if (savesize === 0) {
             throw new GbaCartError("no-save", "This cartridge has no save memory");
         }
-        await this._waitDone(120000); // payload reads the save into RAM
+        await this._waitDone(120000); // the GBA copies the save into its RAM
         const data = await this._streamIn(savesize, onProgress);
         return { data, savesize };
     }
@@ -482,16 +490,16 @@ class GbaCartClient {
             throw new GbaCartError("no-save", "This cartridge has no save memory");
         }
         if (data.length !== savesize) {
-            // GO slot: anything but M_GO sends the payload back to idle
-            // without touching the cart.
+            // The GBA is waiting for M_GO. Anything else sends it back to
+            // idle without touching the cart.
             await this._xfer(GBA_CART.M_ABORT);
             throw new GbaCartError("size-mismatch",
                 `Save file is ${data.length} bytes but the cart expects ${savesize}`);
         }
         await this._xfer(GBA_CART.M_GO);
         await this._streamOut(data, onProgress);
-        // EEPROM writes take seconds; a 128KB flash chip-erase + program can
-        // take a minute or more.
+        // EEPROM writes take seconds; erasing and writing a 128 KB flash save
+        // can take a minute or more.
         await this._waitDone(180000);
         return { savesize };
     }
@@ -514,11 +522,12 @@ class GbaCartClient {
     }
 
     /**
-     * Run a cart op program (web/gba_flash.js builds them; the payload side
-     * is source/gba_cart_dumper/source/cartops.c). `buf` is a multiple of
-     * 256 bytes. The payload checks the length against its complement and
-     * echoes it, takes the buffer in checksummed sections, runs it, and
-     * sends the result words back. Returns a Uint32Array.
+     * Run a cart op program on the GBA: a list of cartridge reads and writes
+     * built by web/gba_flash.js and carried out by cartops.c on the GBA.
+     * `buf` is a multiple of 256 bytes. We send its length followed by the
+     * length with every bit flipped, and the GBA echoes the length back if
+     * both agree. Then the program goes over in checksummed sections, the
+     * GBA runs it, and the result words come back as a Uint32Array.
      */
     async runOps(buf, timeoutMs = 60000, onWait) {
         const len = buf.length;
@@ -546,7 +555,7 @@ class GbaCartClient {
     /** Dump the 16 KB GBA BIOS (no cartridge needed). Returns { data }. */
     async dumpBios(onProgress) {
         await this._command(GBA_CART.CMD_DUMP_BIOS);
-        await this._waitDone(30000); // payload buffers the BIOS first
+        await this._waitDone(30000); // the GBA copies the BIOS into RAM first
         const data = await this._streamIn(GBA_CART.BIOS_BYTES, onProgress);
         return { data };
     }

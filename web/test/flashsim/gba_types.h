@@ -1,4 +1,5 @@
-/* Native stand-in for libgba's gba_types.h (flashcart simulator build). */
+/* Stand-in for libgba's gba_types.h, so cartops.c builds on a PC for the
+ * flash cart simulator. */
 #ifndef GBA_TYPES_SIM_H
 #define GBA_TYPES_SIM_H
 #include <stdbool.h>
