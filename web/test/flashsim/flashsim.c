@@ -14,6 +14,7 @@
  *     full reorderings), two 8-bit chips sharing the 16-bit bus ("double
  *     die"), two interleaved chips (Flash2Advance), and 32 MB banks selected
  *     through SRAM registers.
+ *   - A clock chip on the pins at ROM addresses 0xC4-0xC9.
  *
  * Usage: flashsim key=value ... (the keys are in parseArgs). Requests on stdin:
  *   'R' u32 len, bytes   -> u32 words, words   (run an op buffer)
@@ -63,6 +64,7 @@ static struct {
 	char wiring[16];
 	unsigned seed;
 	int fillFF;
+	int clockGap;      /* ROM 0xC4-0xC9 reads as zeros, as on a cart with a clock */
 } cfgS = {
 	.type = AMD, .cfi = 1, .interleave = 0, .lanes = 1, .banks = 1,
 	.size = 0x1000000, .sector = 0x10000, .buf = 0,
@@ -76,8 +78,18 @@ static Chip *chips;
 static int nChips;
 static u8 sram[0x10000];
 static int bank;
-static long sProg, sBuf, sErase, sChip, sErrors, sOverprog;
+static long sProg, sBuf, sErase, sChip, sErrors, sOverprog, sRomWrites;
 static unsigned long tickCalls;
+
+static struct {
+	int present;
+	u8 time[7], status;
+	u16 pins, direction, readEnable;
+	int bitCount, bytesSent, clockHigh;
+	u8 command, shift;
+	int reading, sio;
+	long readCommands, otherCommands;
+} rtc;
 
 /* ------------------------------------------------------------ data wiring */
 /* Burn2Slot's two data line orders: chip pin i is wired to GBA line BUSn[i]. */
@@ -450,10 +462,54 @@ static void chipWrite(Chip *c, u32 w, u16 v)
 	else if (cfgS.type == INTEL) intelWrite(c, w, v);
 }
 
+/* The chip takes a command on rising clock edges, top bit first, and its top
+ * nibble must be 0110. A read command then puts out each byte lowest bit
+ * first, one bit on each falling edge. Letting go of select ends the transfer. */
+static void rtcPinsWritten(void)
+{
+	int clock = rtc.pins & 1;
+	if (!(rtc.pins & 4)) {
+		rtc.bitCount = rtc.bytesSent = rtc.reading = 0;
+		rtc.command = 0;
+		rtc.sio = 1;
+		rtc.clockHigh = 1;
+		return;
+	}
+	if (rtc.reading) {
+		if (rtc.clockHigh && !clock) {
+			const u8 *from = rtc.command == 0x63 ? &rtc.status : rtc.time;
+			rtc.sio = (from[rtc.bytesSent] >> rtc.bitCount) & 1;
+			if (++rtc.bitCount == 8) {
+				rtc.bitCount = 0;
+				rtc.bytesSent = (rtc.bytesSent + 1) % (rtc.command == 0x63 ? 1 : 7);
+			}
+		}
+	} else if (!rtc.clockHigh && clock) {
+		int in = (rtc.direction & 2) ? (rtc.pins >> 1) & 1 : 1;
+		rtc.command = (u8)(rtc.command << 1 | in);
+		if (++rtc.bitCount == 8) {
+			rtc.bitCount = 0;
+			if (rtc.command == 0x63 || rtc.command == 0x65) {
+				rtc.reading = 1;
+				rtc.readCommands++;
+			} else {
+				rtc.otherCommands++;
+			}
+		}
+	}
+	rtc.clockHigh = clock;
+}
+
 u16 sim_rom_rd(u32 a)
 {
 	u32 w;
-	Chip *c = route(a, &w);
+	Chip *c;
+	if (rtc.present && rtc.readEnable && a >= 0xC4 && a <= 0xC8) {
+		if (a == 0xC6) return rtc.direction;
+		if (a == 0xC8) return rtc.readEnable;
+		return (rtc.direction & 2) ? rtc.pins : (u16)((rtc.pins & ~2) | rtc.sio << 1);
+	}
+	c = route(a, &w);
 	if (!c) return (u16)(a >> 1); /* open bus */
 	if (cfgS.lanes == 2)
 		return fromChip((u16)((chipRead(c, w) & 0xFF) | (chipRead(c + 1, w) & 0xFF) << 8));
@@ -463,7 +519,20 @@ u16 sim_rom_rd(u32 a)
 void sim_rom_wr(u32 a, u16 v)
 {
 	u32 w;
-	Chip *c = route(a, &w);
+	Chip *c;
+	sRomWrites++;
+	if (rtc.present && a >= 0xC4 && a <= 0xC8) {
+		if (a == 0xC4) {
+			rtc.pins = v & 0xF;
+			rtcPinsWritten();
+		} else if (a == 0xC6) {
+			rtc.direction = v & 0xF;
+		} else if (a == 0xC8) {
+			rtc.readEnable = v & 1;
+		}
+		return;
+	}
+	c = route(a, &w);
 	if (!c) return;
 	v = toChip(v);
 	if (cfgS.lanes == 2) {
@@ -491,6 +560,18 @@ u32 sim_ticks(void) { return (u32)(tickCalls++ / 8); }
 
 /* -------------------------------------------------------------- harness */
 static u32 parseNum(const char *s) { return (u32)strtoul(s, NULL, 0); }
+
+/* rtc=YY,MM,DD,WD,HH,MM,SS,status: the bytes as the chip gives them, in hex. */
+static void parseClock(const char *s)
+{
+	rtc.present = 1;
+	for (int i = 0; i < 8; i++) {
+		u8 byte = (u8)strtoul(s, (char **)&s, 16);
+		if (i < 7) rtc.time[i] = byte;
+		else rtc.status = byte;
+		if (*s == ',') s++;
+	}
+}
 
 static void parseArgs(int argc, char **argv)
 {
@@ -521,6 +602,8 @@ static void parseArgs(int argc, char **argv)
 		else if (!strcmp(k, "locked")) cfgS.lockedInit = (int)parseNum(v);
 		else if (!strcmp(k, "seed")) cfgS.seed = parseNum(v);
 		else if (!strcmp(k, "fill")) cfgS.fillFF = !strcmp(v, "ff");
+		else if (!strcmp(k, "rtc")) parseClock(v);
+		else if (!strcmp(k, "clockgap")) cfgS.clockGap = (int)parseNum(v);
 		else if (!strcmp(k, "busyprog")) cfgS.busyProg = (int)parseNum(v);
 		else if (!strcmp(k, "busybuf")) cfgS.busyBuf = (int)parseNum(v);
 		else if (!strcmp(k, "busyerase")) cfgS.busyErase = (int)parseNum(v);
@@ -558,6 +641,7 @@ int main(int argc, char **argv)
 		c->locked = calloc(chipWords() / 0x1000 + 1, 1);
 		for (u32 w = 0; w < chipWords(); w++)
 			c->mem[w] = cfgS.fillFF ? 0xFFFF : (u16)rand();
+		if (cfgS.clockGap) memset((u8 *)c->mem + 0xC4, 0, 6);
 		if (cfgS.lockedInit) memset(c->locked, 1, chipWords() / 0x1000 + 1);
 		c->st = cfgS.type == AMD ? A_READ : I_ARRAY;
 	}
@@ -582,9 +666,11 @@ int main(int argc, char **argv)
 				fwrite(&v, 2, 1, stdout);
 			}
 		} else if (op == 'S') {
-			writeU32(6);
+			writeU32(9);
 			writeU32((u32)sProg); writeU32((u32)sBuf); writeU32((u32)sErase);
 			writeU32((u32)sChip); writeU32((u32)sErrors); writeU32((u32)sOverprog);
+			writeU32((u32)sRomWrites);
+			writeU32((u32)rtc.readCommands); writeU32((u32)rtc.otherCommands);
 		} else {
 			break;
 		}

@@ -364,6 +364,13 @@ class GbCartClient {
 const GB_ROM_BANKS = { 0x52: 72, 0x53: 80, 0x54: 96 };
 const GB_RAM_SIZES = [0, 0x800, 0x2000, 0x8000, 0x20000, 0x10000];
 
+// MBC3+TIMER, TAMA5 and HuC3 carts keep the time. Emulators store it after the
+// save: 48 bytes for MBC3 in VBA-M, BGB, mGBA and SameBoy (44 in older
+// versions), 136 for HuC3 and 40 for TAMA5 in mGBA.
+const GB_CLOCK_TYPES = [0x0F, 0x10, 0xFD, 0xFE];
+const GB_MBC3_CLOCK_TYPES = [0x0F, 0x10];
+const GB_CLOCK_RECORD_MAX = 0x100;
+
 const GB_CART_TYPES = {
     0x00: "ROM only", 0x01: "MBC1", 0x02: "MBC1+RAM", 0x03: "MBC1+RAM+BATTERY",
     0x05: "MBC2", 0x06: "MBC2+BATTERY", 0x08: "ROM+RAM", 0x09: "ROM+RAM+BATTERY",
@@ -401,7 +408,39 @@ function parseGbHeader(h) {
         ramSize: hasRam ? ramSize : 0,
         headerOk: sum === h[0x4D],
         rumble: type >= 0x1C && type <= 0x1E,
+        clock: GB_CLOCK_TYPES.includes(type),
     };
+}
+
+/**
+ * The part of a .sav file that goes into the cartridge's save memory, as
+ * { save, clockRecord }: the whole file, or for a cartridge with a clock, the
+ * save without the clock record an emulator added after it (clockRecord = its
+ * length). null when the file doesn't fit the cartridge.
+ */
+function gbSaveForCart(data, header) {
+    const size = header.ramSize;
+    if (!size) return null;
+    if (data.length === size) return { save: data, clockRecord: 0 };
+    const extra = data.length - size;
+    if (header.clock && extra > 0 && extra <= GB_CLOCK_RECORD_MAX) return { save: data.slice(0, size), clockRecord: extra };
+    return null;
+}
+
+/**
+ * The 48-byte clock record VBA-M, BGB, mGBA and SameBoy keep after an MBC3
+ * save: the registers (seconds, minutes, hours, day low, day high/flags) as
+ * they run and as latched, then the Unix time they were read at.
+ */
+function gbClockRecord(regs, unixSeconds) {
+    const out = new Uint8Array(48);
+    const view = new DataView(out.buffer);
+    regs.forEach((v, i) => {
+        view.setUint32(i * 4, v, true);
+        view.setUint32(20 + i * 4, v, true);
+    });
+    view.setBigUint64(40, BigInt(unixSeconds), true);
+    return out;
 }
 
 /** Reads the cartridge header through a connected GbCartClient. */
@@ -423,6 +462,31 @@ class GbCart {
         this.header.raw = raw;
         return this.header;
     }
+
+    /**
+     * Reads the clock of an MBC3 cartridge (after readHeader) without changing
+     * it: [seconds, minutes, hours, day low, day high/flags], or null when the
+     * cartridge has none or it doesn't answer.
+     */
+    async readClock() {
+        if (!this.header || !GB_MBC3_CLOCK_TYPES.includes(this.header.type)) return null;
+        const p = new GbProgram();
+        p.wr(0x0000, 0x0A);
+        p.wr(0x6000, 0x00);
+        p.wr(0x6000, 0x01);
+        const reads = [];
+        for (let reg = 0x08; reg <= 0x0C; reg++) {
+            p.wr(0x4000, reg);
+            reads.push(p.rd(0xA000, 1));
+        }
+        p.wr(0x4000, 0x00);
+        p.wr(0x0000, 0x00);
+        const r = await this.client.run(p);
+        const raw = reads.map((h) => r.bytes(h)[0]);
+        if (raw.every((v) => v === 0xFF)) return null;
+        // Only these bits exist in the clock chip
+        return [raw[0] & 0x3F, raw[1] & 0x3F, raw[2] & 0x1F, raw[3], raw[4] & 0xC1];
+    }
 }
 
 const GB_CRC_TABLE = (() => {
@@ -442,8 +506,8 @@ function gbCrc32(bytes) {
 }
 
 if (typeof window !== "undefined") {
-    Object.assign(window, { GbCartClient, GbCart, GbProgram, GbResult, GbLinkError, GBLINK, GBOP, parseGbHeader, gbCrc32 });
+    Object.assign(window, { GbCartClient, GbCart, GbProgram, GbResult, GbLinkError, GBLINK, GBOP, parseGbHeader, gbSaveForCart, gbClockRecord, gbCrc32 });
 }
 if (typeof module !== "undefined" && module.exports) {
-    module.exports = { GbCartClient, GbCart, GbProgram, GbResult, GbLinkError, GBLINK, GBOP, parseGbHeader, gbCrc32, fletcher };
+    module.exports = { GbCartClient, GbCart, GbProgram, GbResult, GbLinkError, GBLINK, GBOP, parseGbHeader, gbSaveForCart, gbClockRecord, gbCrc32, fletcher };
 }
