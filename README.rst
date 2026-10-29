@@ -77,8 +77,14 @@ The GBA's screen goes blank while the page is working with the cartridge and
 comes back when it's done.
 
 Supported cartridges: carts without a mapper, and the common mappers MBC1,
-MBC2, MBC3 and MBC5 (including rumble carts). The clock in carts with a
-real-time clock is not saved.
+MBC2, MBC3 and MBC5 (including rumble carts).
+
+Games with a clock, such as Pokémon Gold, Silver and Crystal: **Dump Save**
+also reads the cartridge's clock and adds it to the end of the ``.sav``, the
+way emulators keep it, so an emulator carries on with the cartridge's time.
+**Restore Save** writes only the save and never changes the cartridge's
+clock; a ``.sav`` with an emulator's clock data at the end is fine. The clock
+of HuC3 and TAMA5 cartridges is not read.
 
 **If the GBA resets when you insert a cartridge:** some cartridges have a
 voltage-check chip that resets the console. Insert the cartridge slowly, or

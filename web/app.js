@@ -194,6 +194,12 @@ function formatSize(bytes) {
     return `${bytes} B`;
 }
 
+// Two sizes to compare, in exact bytes when rounding would make them look the same.
+function formatSizes(a, b) {
+    if (a === b || formatSize(a) !== formatSize(b)) return [formatSize(a), formatSize(b)];
+    return [`${a.toLocaleString()} bytes`, `${b.toLocaleString()} bytes`];
+}
+
 async function loadMultibootROM() {
     try {
         // Skip the browser cache so an old copy of the program is never sent.
@@ -321,21 +327,34 @@ function saveTypeName(bytes) {
 // The note under each restore file box: whether the chosen save file is the
 // right size for the cartridge.
 function updateRestoreNotes() {
-    const note = (id, data, size) => {
+    const note = (id, data, size, clockRecord = 0) => {
         const p = document.getElementById(id);
         p.className = "file-note";
         p.textContent = "";
         if (!data || !size) return;
-        if (data.length === size) {
+        if (data.length === size || clockRecord) {
             p.classList.add("ok");
-            p.textContent = `Matches the cartridge's ${formatSize(size)} save memory.`;
+            p.textContent = `Matches the cartridge's ${formatSize(size)} save memory.` +
+                (clockRecord ? ` ${clockRecordNote(clockRecord)}` : "");
         } else {
+            const [cart, file] = formatSizes(size, data.length);
             p.classList.add("bad");
-            p.textContent = `The cartridge's save memory is ${formatSize(size)}; this file is ${formatSize(data.length)}.`;
+            p.textContent = `The cartridge's save memory is ${cart}; this file is ${file}.`;
         }
     };
-    note("gbRestoreNote", gbRestoreData, gbHeader && gbHeader.headerOk ? gbHeader.ramSize : 0);
+    const gbOk = gbHeader && gbHeader.headerOk;
+    const gbFit = gbOk && gbRestoreData ? gbSaveForCart(gbRestoreData, gbHeader) : null;
+    note("gbRestoreNote", gbRestoreData, gbOk ? gbHeader.ramSize : 0, gbFit ? gbFit.clockRecord : 0);
     note("gbaRestoreNote", gbaRestoreData, gbaCartInfo ? gbaCartInfo.savesize : 0);
+}
+
+function describeClock([seconds, minutes, hours, dayLow, dayHigh]) {
+    const time = `day ${dayLow + (dayHigh & 1) * 256}, ${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    return dayHigh & 0x40 ? `The cartridge's clock is stopped at ${time}.` : `The cartridge's clock reads ${time}.`;
+}
+
+function clockRecordNote(bytes) {
+    return `The last ${bytes} bytes are the clock record an emulator adds; they are left out, and the cartridge keeps its own clock.`;
 }
 
 function resetGbaSession() {
@@ -509,11 +528,19 @@ async function gbWithAgent(fn) {
     }
 }
 
-async function gbReadInfoInner() {
+async function gbReadInfoInner({ clock = false } = {}) {
     setStatus("Reading the cartridge...", "busy");
     let h;
     try {
-        h = await gbWithAgent((client) => new GbCart(client, log).readHeader());
+        h = await gbWithAgent(async (client) => {
+            const cart = new GbCart(client, log);
+            const header = await cart.readHeader();
+            if (clock && header.headerOk) {
+                header.clockRegs = await cart.readClock();
+                header.clockTime = Math.floor(Date.now() / 1000);
+            }
+            return header;
+        });
     } catch (e) {
         gbHeader = null;
         renderCart("gbCartPanel", { kind: "missing", title: "Couldn't read the cartridge", text: "Make sure it's inserted all the way, then read it again." });
@@ -668,8 +695,8 @@ function gbCartBaseName() {
 
 // Reads the cartridge header first and stops if there is no cartridge. The
 // dump itself gets the ROM and save sizes from the cartridge.
-async function gbCheckedHeader() {
-    const h = await gbReadInfoInner();
+async function gbCheckedHeader(options) {
+    const h = await gbReadInfoInner(options);
     if (!h.headerOk) throw new Error("No cartridge header — insert the cartridge and try again.");
     setStatus(`${gbOpLabel}...`, "busy");
     return h;
@@ -717,15 +744,25 @@ async function gbDumpRom() {
 
 async function gbDumpSave() {
     await runGbOp("Dumping the save", async () => {
-        const h = await gbCheckedHeader();
+        // The clock is read along with the header; the record keeps the time it was read at
+        const h = await gbCheckedHeader({ clock: true });
         if (!h.ramSize) throw new Error("This cartridge has no save memory.");
         const t0 = Date.now();
         const rx = new FastDumpReceiver(usb, log, { trigger: GBLINK.CMD_DUMP_SAVE, headerTimeoutMs: 5000 });
         const res = await gbFastTransfer(rx, () => rx.receiveDump(gbSectionProgress("Received", t0)));
         log(`GB save dump complete: ${formatSize(res.data.length)}.`, "success");
+        let data = res.data;
+        if (h.clockRegs) {
+            data = new Uint8Array(res.data.length + 48);
+            data.set(res.data);
+            data.set(gbClockRecord(h.clockRegs, h.clockTime), res.data.length);
+            log(`${describeClock(h.clockRegs)} It's added after the save, the way emulators keep it.`);
+        } else if (h.typeName.startsWith("MBC3+TIMER")) {
+            log("The cartridge's clock didn't answer, so the save has no clock record.", "error");
+        }
         setStatus("Save dumped", "ok");
-        setProgress(100, `${formatSize(res.data.length)} — it's in Files, ready to save.`);
-        offerDownload(res.data, "GB_SAVE");
+        setProgress(100, `${formatSize(data.length)} — it's in Files, ready to save.`);
+        offerDownload(data, "GB_SAVE");
     });
 }
 
@@ -739,11 +776,14 @@ async function gbRestoreSave() {
     await runGbOp("Restoring the save", async () => {
         const h = await gbCheckedHeader();
         if (!h.ramSize) throw new Error("This cartridge has no save memory.");
-        if (gbRestoreData.length !== h.ramSize) {
-            throw new Error(`The save file is ${formatSize(gbRestoreData.length)} but this cartridge's save memory is ${formatSize(h.ramSize)}.`);
+        const fit = gbSaveForCart(gbRestoreData, h);
+        if (!fit) {
+            const [file, cart] = formatSizes(gbRestoreData.length, h.ramSize);
+            throw new Error(`The save file is ${file} but this cartridge's save memory is ${cart}.`);
         }
+        if (fit.clockRecord) log(clockRecordNote(fit.clockRecord));
         const t0 = Date.now();
-        const tx = new FastRestoreSender(usb, gbRestoreData, log, { trigger: GBLINK.CMD_RESTORE, headerTimeoutMs: 5000 });
+        const tx = new FastRestoreSender(usb, fit.save, log, { trigger: GBLINK.CMD_RESTORE, headerTimeoutMs: 5000 });
         await gbFastTransfer(tx, () => tx.sendRestore(gbSectionProgress("Sent", t0)));
         log("Save restored. Power-cycle the cartridge to check it in-game.", "success");
         setStatus("Save restored", "ok");
