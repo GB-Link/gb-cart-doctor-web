@@ -15,7 +15,7 @@
 import { strict as assert } from "node:assert";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { GbaCartClient, GBA_CART: C, gbaSaveForCart, gbaClockRecord } = require("../gba_cart.js");
+const { GbaCartClient, GBA_CART: C } = require("../gba_cart.js");
 
 // ---------------------------------------------------------------------------
 // Model of the dumper. Keep it in step with main.c.
@@ -433,70 +433,6 @@ test("restoreSave survives an upload corruption via payload NAK + resend", async
     for (let i = 0; i < file.length; i++) file[i] = (i * 3 + 1) & 0xFF;
     await client.restoreSave(file, () => {});
     assert.deepEqual(env.committed, file);
-});
-
-// A clock record as mGBA writes it: time (BCD), clock status, Unix time.
-const CLOCK_RECORD = [0x01, 0x02, 0x08, 0x04, 0x01, 0x16, 0x22, 0x40, 0xCD, 0x0C, 0xDB, 0x6A, 0, 0, 0, 0];
-
-function saveWithRecord(size, record = CLOCK_RECORD) {
-    const file = new Uint8Array(size + record.length);
-    for (let i = 0; i < size; i++) file[i] = (i * 101 + 7) & 0xFF;
-    file.set(record, size);
-    return file;
-}
-
-for (const size of [0x200, 0x2000, 0x8000, 0x20000]) {
-    test(`restoreSave leaves the clock record out of a ${size} byte save`, async () => {
-        const env = makeEnv({ savesize: size });
-        const { client } = makeClient(env);
-        const file = saveWithRecord(size);
-        const res = await client.restoreSave(file, () => {});
-        assert.equal(res.clockRecord, 16);
-        assert.equal(env.committed.length, size);
-        assert.deepEqual(env.committed, file.slice(0, size));
-    });
-}
-
-test("restoreSave reports no clock record for a plain save", async () => {
-    const env = makeEnv({ savesize: 0x200 });
-    const { client } = makeClient(env);
-    const res = await client.restoreSave(new Uint8Array(0x200), () => {});
-    assert.equal(res.clockRecord, 0);
-});
-
-test("restoreSave refuses 16 extra bytes that aren't a clock time", async () => {
-    const env = makeEnv({ savesize: 0x200 });
-    const { client } = makeClient(env);
-    const file = saveWithRecord(0x200, new Array(16).fill(0xFF));
-    await assert.rejects(client.restoreSave(file, () => {}), (e) => e.code === "size-mismatch");
-    assert.equal(env.committed, null);
-});
-
-test("gbaClockRecord builds the record mGBA keeps, and restoring takes it back", () => {
-    const time = Uint8Array.from(CLOCK_RECORD.slice(0, 7));
-    const record = gbaClockRecord(time, 0x40, 1792740557);
-    assert.deepEqual(Array.from(record), CLOCK_RECORD);
-    assert.equal(gbaSaveForCart(saveWithRecord(0x200, record), 0x200).clockRecord, 16);
-});
-
-test("gbaSaveForCart only takes a save with a 16-byte clock record", () => {
-    const fits = (extra) => gbaSaveForCart(new Uint8Array(0x8000 + extra), 0x8000);
-    assert.equal(fits(0).clockRecord, 0);
-    assert.equal(fits(16).clockRecord, 16);
-    assert.equal(fits(16).save.length, 0x8000);
-    for (const extra of [-16, 1, 15, 17, 48, 256]) assert.equal(fits(extra), null);
-    assert.equal(gbaSaveForCart(new Uint8Array(16), 0), null);
-});
-
-test("gbaSaveForCart reads bit 7 of the hour as the PM flag", () => {
-    const record = CLOCK_RECORD.slice();
-    record[4] = 0xA1;
-    assert.equal(gbaSaveForCart(saveWithRecord(0x200, record), 0x200).clockRecord, 16);
-    record[4] = 0x1A;
-    assert.equal(gbaSaveForCart(saveWithRecord(0x200, record), 0x200), null);
-    record[4] = 0x01;
-    record[0] = 0xA1;
-    assert.equal(gbaSaveForCart(saveWithRecord(0x200, record), 0x200), null);
 });
 
 test("restoreSave refuses a size mismatch without touching the cart", async () => {

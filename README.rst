@@ -114,13 +114,6 @@ Game Boy Advance
 
 While it works, the GBA's screen shows what it's doing and a progress bar.
 
-Games with a clock, such as Pokémon Ruby, Sapphire and Emerald: **Dump Save**
-also reads the cartridge's clock and adds it to the end of the ``.sav``, the
-way mGBA and FlashGBX keep it, so an emulator carries on with the cartridge's
-time. If the clock's battery has run out, the ``.sav`` is the save alone.
-**Restore Save** writes only the save and never changes the cartridge's clock;
-a ``.sav`` with clock data at the end is fine.
-
 A ROM dump takes about 1.5 minutes per 4 MB of game. Empty space at the end
 of a ROM takes almost no time. Saves and the BIOS take a few seconds. Games
 with an EEPROM save take a few extra seconds to read, because the save size
@@ -211,9 +204,8 @@ Restoring and erasing saves
 
 Restoring a save **overwrites** the save on the cartridge, so the page asks
 you first. It only goes ahead if the file is **exactly the same size** as the
-cartridge's save memory, not counting any clock data at the end. Otherwise
-nothing is written. Everything sent is checked and sent again if it arrives
-damaged.
+cartridge's save memory. Otherwise nothing is written. Everything sent is
+checked and sent again if it arrives damaged.
 
 **Erase Save** (GBA only) wipes the save memory, also after asking you first.
 

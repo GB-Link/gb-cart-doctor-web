@@ -1063,101 +1063,11 @@ class GbaFlashcart {
     }
 }
 
-// ---------------------------------------------------------------- the clock
-
-// Games with a clock have a clock chip wired to pins the cartridge maps over
-// ROM addresses 0xC4-0xC9: the pin values, each pin's direction, and a switch
-// that makes the pins readable instead of the ROM. Pin 0 is the chip's serial
-// clock, pin 1 its data and pin 2 its select.
-const GPIO_DATA = 0xC4, GPIO_DIRECTION = 0xC6, GPIO_READ_ENABLE = 0xC8;
-const CLOCK_READ_STATUS = 0x63, CLOCK_READ_TIME = 0x65;
-const CLOCK_POWER_LOST = 0x80;
-
-/**
- * Add one read command for the clock chip, using the same pin sequence as the
- * games and FlashGBX. Returns the handle of each data bit's read.
- */
-function addClockRead(prog, command, bytes) {
-    prog.w16(GPIO_READ_ENABLE, 1);
-    prog.w16(GPIO_DATA, 1);
-    prog.w16(GPIO_DATA, 5);
-    prog.w16(GPIO_DIRECTION, 7);
-    for (let i = 7; i >= 0; i--) {
-        const bit = (command >> i) & 1;
-        for (const clock of [0, 0, 0, 1]) prog.w16(GPIO_DATA, 4 | bit << 1 | clock);
-    }
-    prog.w16(GPIO_DIRECTION, 5);
-    const bits = [];
-    for (let i = 0; i < bytes * 8; i++) {
-        for (const clock of [0, 0, 0, 0, 0, 1]) prog.w16(GPIO_DATA, 4 | clock);
-        bits.push(prog.rd16(GPIO_DATA, 2));
-    }
-    prog.w16(GPIO_DATA, 1);
-    prog.w16(GPIO_DATA, 1);
-    return bits;
-}
-
-// Each byte arrives lowest bit first.
-function clockBytes(result, bits) {
-    const out = new Uint8Array(bits.length / 8);
-    bits.forEach((handle, i) => {
-        if (result.word(handle) & 2) out[i >> 3] |= 1 << (i & 7);
-    });
-    return out;
-}
-
-// Year, month, day, weekday, hour, minute, second, as BCD digits.
-function clockTimeIsValid(time) {
-    const highest = [0x99, 0x12, 0x31, 0x06, 0x23, 0x59, 0x59];
-    return time.every((byte, i) => (byte & 0x0F) <= 9 && byte <= highest[i]) && time[1] >= 1 && time[2] >= 1;
-}
-
-/**
- * Read the cartridge's clock without changing it. Returns { time, status }:
- * time is 7 bytes (see clockTimeIsValid), or null if the chip says it lost
- * power and has no good time to give. Returns null if there is no clock.
- *
- * Reaching the pins means writing to ROM addresses, which flash carts ignore
- * outside a command sequence. Only the status is read until the pins are known
- * to be there.
- */
-async function gbaReadClock(client) {
-    const cart = new GbaFlashcart(client);
-    let prog = new CartOpProgram();
-    const romRead = prog.rd16(GPIO_DATA, 6);
-    let r = await cart.exec(prog);
-    const rom = r.bytes(romRead, 6);
-    // The space is padding on a cart with these pins. Anything else there is
-    // game code, so nothing gets written.
-    if (rom[1] || rom[3] || rom[5]) return null;
-
-    prog = new CartOpProgram();
-    const statusBits = addClockRead(prog, CLOCK_READ_STATUS, 1);
-    const pinsRead = prog.rd16(GPIO_DATA, 6);
-    prog.w16(GPIO_READ_ENABLE, 0);
-    r = await cart.exec(prog);
-    // Without the pins, the switch does nothing and this still reads as ROM.
-    if (r.bytes(pinsRead, 6).every((byte, i) => byte === rom[i])) return null;
-    const status = clockBytes(r, statusBits)[0];
-    if (status & CLOCK_POWER_LOST) return { time: null, status };
-
-    prog = new CartOpProgram();
-    const timeBits = addClockRead(prog, CLOCK_READ_TIME, 7);
-    prog.w16(GPIO_READ_ENABLE, 0);
-    r = await cart.exec(prog);
-    const time = clockBytes(r, timeBits);
-    // Bit 7 of the hour is an AM/PM flag; emulators read the hour as plain digits.
-    time[4] &= 0x7F;
-    // Other hardware on these pins, like a tilt sensor, doesn't give a real time.
-    return clockTimeIsValid(time) ? { time, status } : null;
-}
-
 if (typeof window !== "undefined") {
     window.GbaFlashcart = GbaFlashcart;
     window.FlashcartError = FlashcartError;
     window.CartOpProgram = CartOpProgram;
-    window.gbaReadClock = gbaReadClock;
 }
 if (typeof module !== "undefined" && module.exports) {
-    module.exports = { GbaFlashcart, FlashcartError, CartOpProgram, CartOpResult, CARTOP, parseCfi, crc32, gbaReadClock };
+    module.exports = { GbaFlashcart, FlashcartError, CartOpProgram, CartOpResult, CARTOP, parseCfi, crc32 };
 }

@@ -18,7 +18,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { GbaFlashcart, CartOpProgram, CartOpResult, gbaReadClock } = require("../gba_flash.js");
+const { GbaFlashcart } = require("../gba_flash.js");
 const { FLASHCART_PROFILES } = require("../flashcart_profiles.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,8 +76,7 @@ class SimCart {
         const n = (await this._read(4)).readUInt32LE(0);
         const b = await this._read(n * 4);
         const v = (i) => b.readUInt32LE(i * 4);
-        return { prog: v(0), buf: v(1), erase: v(2), chip: v(3), errors: v(4), overprog: v(5),
-            romWrites: v(6), clockReads: v(7), clockOthers: v(8) };
+        return { prog: v(0), buf: v(1), erase: v(2), chip: v(3), errors: v(4), overprog: v(5) };
     }
     close() { this.proc.stdin.end(); }
 }
@@ -330,83 +329,6 @@ test("manual profile choice without detection reads CFI itself", async () => {
         const rom = makeRom(0x60000, 9);
         await fc.writeRom(rom, { profile: generic });
         assert.ok(Buffer.from(rom).equals(await cart.dump(0, rom.length)));
-    } finally { cart.close(); }
-});
-
-// ---------------------------------------------------------------- the clock
-
-const WITH_CLOCK = ["type=rom", "size=0x800000", "clockgap=1"];
-
-async function romGap(cart) {
-    const prog = new CartOpProgram();
-    const read = prog.rd16(0xC4, 6);
-    const r = new CartOpResult(await cart.runOps(prog.build()));
-    return Array.from(r.bytes(read, 6));
-}
-
-test("the clock is read without being changed, and the ROM is visible again after", async () => {
-    const cart = new SimCart([...WITH_CLOCK, "rtc=26,11,06,05,14,37,59,40"]);
-    try {
-        const clock = await gbaReadClock(cart);
-        assert.deepEqual(Array.from(clock.time), [0x26, 0x11, 0x06, 0x05, 0x14, 0x37, 0x59]);
-        assert.equal(clock.status, 0x40);
-        const st = await cart.stats();
-        assert.equal(st.clockReads, 2);
-        assert.equal(st.clockOthers, 0, "only read commands may reach the clock");
-        assert.deepEqual(await romGap(cart), [0, 0, 0, 0, 0, 0]);
-    } finally { cart.close(); }
-});
-
-test("the clock's AM/PM flag is left out of the hour", async () => {
-    const cart = new SimCart([...WITH_CLOCK, "rtc=26,11,06,05,A1,37,59,40"]);
-    try {
-        assert.equal((await gbaReadClock(cart)).time[4], 0x21);
-    } finally { cart.close(); }
-});
-
-test("a clock that lost power gives no time, and its time isn't read", async () => {
-    const cart = new SimCart([...WITH_CLOCK, "rtc=00,01,01,00,00,00,00,C0"]);
-    try {
-        const clock = await gbaReadClock(cart);
-        assert.equal(clock.time, null);
-        assert.equal(clock.status, 0xC0);
-        assert.equal((await cart.stats()).clockReads, 1);
-    } finally { cart.close(); }
-});
-
-test("pins that don't give a real time count as no clock", async () => {
-    const cart = new SimCart([...WITH_CLOCK, "rtc=00,00,00,00,00,00,00,00"]);
-    try {
-        assert.equal(await gbaReadClock(cart), null);
-    } finally { cart.close(); }
-});
-
-test("a cart with game code at the clock pins is never written to", async () => {
-    const cart = new SimCart(["type=rom", "size=0x800000"]);
-    try {
-        assert.notDeepEqual(await romGap(cart), [0, 0, 0, 0, 0, 0]);
-        assert.equal(await gbaReadClock(cart), null);
-        assert.equal((await cart.stats()).romWrites, 0);
-    } finally { cart.close(); }
-});
-
-test("a cart without clock pins reads as no clock", async () => {
-    const cart = new SimCart(WITH_CLOCK);
-    try {
-        assert.equal(await gbaReadClock(cart), null);
-        assert.equal((await cart.stats()).clockReads, 0);
-    } finally { cart.close(); }
-});
-
-test("a flash cart without a clock isn't changed by looking for one", async () => {
-    const cart = new SimCart(["type=amd", "size=0x800000", "clockgap=1"]);
-    try {
-        const before = await cart.dump(0, 0x1000);
-        assert.equal(await gbaReadClock(cart), null);
-        const st = await cart.stats();
-        assert.equal(st.prog + st.buf + st.erase + st.chip, 0);
-        assert.ok(before.equals(await cart.dump(0, 0x1000)));
-        assert.deepEqual(await romGap(cart), [0, 0, 0, 0, 0, 0]);
     } finally { cart.close(); }
 });
 

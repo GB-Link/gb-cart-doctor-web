@@ -77,39 +77,6 @@ class GbaCartError extends Error {
     }
 }
 
-// mGBA and FlashGBX keep a 16-byte clock record after the save of a game with
-// a clock: the time as 7 BCD bytes (year, month, day, weekday, hour, minute,
-// second; bit 7 of the hour is the PM flag), the clock's status byte, then the
-// Unix time as 8 bytes.
-const GBA_CLOCK_RECORD_BYTES = 16;
-
-/**
- * The part of a .sav file that goes into the cartridge's save memory, as
- * { save, clockRecord }: the whole file, or the save without its clock record
- * (clockRecord = the record's length). null when the file doesn't fit the
- * cartridge. A GBA cartridge's header doesn't say whether it has a clock, so
- * the record is recognised by its size and its time bytes.
- */
-function gbaSaveForCart(data, saveSize) {
-    if (!saveSize) return null;
-    if (data.length === saveSize) return { save: data, clockRecord: 0 };
-    if (data.length !== saveSize + GBA_CLOCK_RECORD_BYTES) return null;
-    const isTime = data.subarray(saveSize, saveSize + 7).every((byte, i) => {
-        const value = i === 4 ? byte & 0x7F : byte;
-        return (value & 0x0F) <= 9 && value >> 4 <= 9;
-    });
-    return isTime ? { save: data.slice(0, saveSize), clockRecord: GBA_CLOCK_RECORD_BYTES } : null;
-}
-
-/** The clock record to keep after a save, from a reading of the cartridge's clock. */
-function gbaClockRecord(time, status, unixSeconds) {
-    const out = new Uint8Array(GBA_CLOCK_RECORD_BYTES);
-    out.set(time);
-    out[7] = status;
-    new DataView(out.buffer).setBigUint64(8, BigInt(unixSeconds), true);
-    return out;
-}
-
 class GbaCartClient {
     constructor(usb, log = console.log) {
         this.usb = usb;
@@ -508,9 +475,8 @@ class GbaCartClient {
     }
 
     /**
-     * Write a save file into the cartridge save memory. Refused unless the
-     * file fits the detected save size (see gbaSaveForCart). Returns
-     * { savesize, clockRecord }. The cartridge's clock is never written.
+     * Write `data` into the cartridge save memory. Refused unless data.length
+     * exactly matches the detected save size.
      */
     async restoreSave(data, onProgress) {
         await this._command(GBA_CART.CMD_RESTORE);
@@ -523,8 +489,7 @@ class GbaCartClient {
         if (savesize === 0) {
             throw new GbaCartError("no-save", "This cartridge has no save memory");
         }
-        const fit = gbaSaveForCart(data, savesize);
-        if (!fit) {
+        if (data.length !== savesize) {
             // The GBA is waiting for M_GO. Anything else sends it back to
             // idle without touching the cart.
             await this._xfer(GBA_CART.M_ABORT);
@@ -532,11 +497,11 @@ class GbaCartClient {
                 `Save file is ${data.length} bytes but the cart expects ${savesize}`);
         }
         await this._xfer(GBA_CART.M_GO);
-        await this._streamOut(fit.save, onProgress);
+        await this._streamOut(data, onProgress);
         // EEPROM writes take seconds; erasing and writing a 128 KB flash save
         // can take a minute or more.
         await this._waitDone(180000);
-        return { savesize, clockRecord: fit.clockRecord };
+        return { savesize };
     }
 
     /** Zero-fill the cartridge save memory. Returns { savesize }. */
@@ -600,9 +565,7 @@ if (typeof window !== "undefined") {
     window.GbaCartClient = GbaCartClient;
     window.GbaCartError = GbaCartError;
     window.GBA_CART = GBA_CART;
-    window.gbaSaveForCart = gbaSaveForCart;
-    window.gbaClockRecord = gbaClockRecord;
 }
 if (typeof module !== "undefined" && module.exports) {
-    module.exports = { GbaCartClient, GbaCartError, GBA_CART, GBA_BATCH_WORDS, gbaSaveForCart, gbaClockRecord };
+    module.exports = { GbaCartClient, GbaCartError, GBA_CART, GBA_BATCH_WORDS };
 }
