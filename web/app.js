@@ -345,7 +345,9 @@ function updateRestoreNotes() {
     const gbOk = gbHeader && gbHeader.headerOk;
     const gbFit = gbOk && gbRestoreData ? gbSaveForCart(gbRestoreData, gbHeader) : null;
     note("gbRestoreNote", gbRestoreData, gbOk ? gbHeader.ramSize : 0, gbFit ? gbFit.clockRecord : 0);
-    note("gbaRestoreNote", gbaRestoreData, gbaCartInfo ? gbaCartInfo.savesize : 0);
+    const gbaSize = gbaCartInfo ? gbaCartInfo.savesize : 0;
+    const gbaFit = gbaRestoreData ? gbaSaveForCart(gbaRestoreData, gbaSize) : null;
+    note("gbaRestoreNote", gbaRestoreData, gbaSize, gbaFit ? gbaFit.clockRecord : 0);
 }
 
 function describeClock([seconds, minutes, hours, dayLow, dayHigh]) {
@@ -354,7 +356,7 @@ function describeClock([seconds, minutes, hours, dayLow, dayHigh]) {
 }
 
 function clockRecordNote(bytes) {
-    return `The last ${bytes} bytes are the clock record an emulator adds; they are left out, and the cartridge keeps its own clock.`;
+    return `The last ${bytes} bytes are a clock record, which emulators add; they are left out, and the cartridge's own clock isn't changed.`;
 }
 
 function resetGbaSession() {
@@ -1162,11 +1164,37 @@ async function gbaDumpRom() {
     });
 }
 
+// The clock record for a save that has just been dumped, or null. A problem
+// with the clock is only logged, so it can't cost the dump.
+async function gbaReadClockRecord() {
+    try {
+        const clock = await gbaReadClock(gbaClient);
+        if (!clock) return null;
+        if (!clock.time) {
+            log("The cartridge's clock has lost its time (its battery may be flat), so the save has no clock record.");
+            return null;
+        }
+        const [year, month, day, , hour, minute, second] = Array.from(clock.time, (b) => b.toString(16).padStart(2, "0"));
+        log(`The cartridge's clock reads 20${year}-${month}-${day} ${hour}:${minute}:${second}. It's added after the save, the way emulators keep it.`);
+        return gbaClockRecord(clock.time, clock.status, Math.floor(Date.now() / 1000));
+    } catch (e) {
+        log(`The cartridge's clock couldn't be read (${e.message}), so the save has no clock record.`, "error");
+        return null;
+    }
+}
+
 async function gbaDumpSave() {
     await runGbaOp("Dumping the save", async () => {
         const t0 = Date.now();
-        const { data } = await gbaClient.dumpSave(gbaProgress("Received", t0));
+        let { data } = await gbaClient.dumpSave(gbaProgress("Received", t0));
         log(`GBA save dump complete: ${formatSize(data.length)}.`, "success");
+        const record = await gbaReadClockRecord();
+        if (record) {
+            const withRecord = new Uint8Array(data.length + record.length);
+            withRecord.set(data);
+            withRecord.set(record, data.length);
+            data = withRecord;
+        }
         setStatus("Save dumped", "ok");
         setProgress(100, `${formatSize(data.length)} — it's in Files, ready to save.`);
         offerDownload(data, "GBA_SAVE");
@@ -1194,7 +1222,8 @@ async function gbaRestoreSave() {
     await runGbaOp("Restoring the save", async () => {
         const t0 = Date.now();
         log("Uploading save, then writing to the cartridge — flash carts can take a minute.");
-        await gbaClient.restoreSave(gbaRestoreData, gbaProgress("Sent", t0));
+        const { clockRecord } = await gbaClient.restoreSave(gbaRestoreData, gbaProgress("Sent", t0));
+        if (clockRecord) log(clockRecordNote(clockRecord));
         log("GBA save restored. Power-cycle the cartridge and check in-game.", "success");
         setStatus("Save restored", "ok");
         setProgress(100, "Turn the GBA off and on with the cartridge to check it in-game.");
