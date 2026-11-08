@@ -148,7 +148,7 @@ function updateButtons() {
     pill.dataset.state = !connected ? "off" : linkBusy ? "busy" : "on";
     document.getElementById("connText").textContent = !connected ? "Not connected" : linkBusy ? "Working" : "Connected";
 
-    setSteps("gbSections", [connected, connected && gbReady, connected && gbReady && !!(gbHeader && gbHeader.headerOk)]);
+    setSteps("gbSections", [connected, connected && gbReady, connected && gbReady && (!!(gbHeader && gbHeader.headerOk) || ezjrCartFound())]);
     setSteps("gbaSections", [connected, connected && gbaReady, connected && gbaReady && !!gbaCartInfo]);
     for (const id of ["restoreFile", "gbFlashFile", "gbaRestoreFile", "gbaFlashFile"]) {
         document.getElementById(id).closest(".drop").classList.toggle("disabled", linkBusy);
@@ -168,6 +168,7 @@ function updateButtons() {
     document.getElementById("gbFlashWriteBtn").disabled = gbActionsOff || !gbFlashRom;
     document.getElementById("gbFlashProfile").disabled = linkBusy;
     document.getElementById("gbFlashEraseRest").disabled = linkBusy;
+    ezjrUpdateButtons(gbActionsOff, linkBusy);
 
     // GBA: sending the dumper (or using one already running) needs the link
     // to be free; the action buttons also need the dumper to have answered.
@@ -412,9 +413,11 @@ function gbaCartBaseName() {
     return `gba_dump_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}`;
 }
 
-function offerDownload(data, type) {
+function offerDownload(data, type, fileName) {
     let filename;
-    if (type === "GBA_ROM") {
+    if (fileName) {
+        filename = fileName;
+    } else if (type === "GBA_ROM") {
         filename = `${gbaCartBaseName()}.gba`;
     } else if (type === "GBA_SAVE") {
         filename = `${gbaCartBaseName()}.sav`;
@@ -435,7 +438,7 @@ function offerDownload(data, type) {
     item.className = "file";
     const kind = document.createElement("span");
     kind.className = "file-kind";
-    kind.textContent = kinds[type] || "SAV";
+    kind.textContent = kinds[type] || (fileName ? (fileName.includes(".") ? fileName.split(".").pop().slice(0, 4).toUpperCase() : "FILE") : "SAV");
     const meta = document.createElement("span");
     meta.className = "file-meta";
     const name = document.createElement("span");
@@ -505,6 +508,7 @@ function resetGbSession() {
     gbLinkConfigured = false;
     renderCart("gbCartPanel", CART_NOT_READ);
     document.getElementById("gbFlashPanel").hidden = true;
+    ezjrReset();
 }
 
 // Uploads the cartridge program to the GBC, runs fn(client) with it, then
@@ -548,6 +552,11 @@ async function gbReadInfoInner({ clock = false } = {}) {
     }
     gbReady = true;
     gbHeader = h;
+    // An EZ Flash Jr shows its boot loader's header (title BOOTLOADER, MBC1). Only
+    // probe for one then, or with no header at all: the check writes to $7Fxx,
+    // which an ordinary MBC1 cart takes as its mode register.
+    if ((!h.headerOk || h.title === "BOOTLOADER") && await ezjrProbeAfterRead()) return h;
+    ezjrReset();     // not an EZ Flash Jr, so forget one found earlier
     if (!h.headerOk) {
         renderCart("gbCartPanel", {
             kind: "missing",

@@ -119,6 +119,7 @@
                             <button class="tab" role="tab" data-tab="backup">Back Up</button>
                             <button class="tab" role="tab" data-tab="restore">Restore Save</button>
                             <button class="tab" role="tab" data-tab="flash">Flash Cart</button>
+                            <button class="tab" role="tab" data-tab="ezjr">EZ Flash Jr</button>
                         </div>
 
                         <div class="tab-panel" data-tabs="gb" data-panel="backup">
@@ -187,6 +188,59 @@
                                 <button id="gbFlashWriteBtn" class="btn btn-danger" disabled>Write ROM</button>
                             </div>
                             <p class="fine">Writing to an erased cart takes about 3.5 minutes per MB. Parts that already hold the right data are skipped, so writing the same ROM again takes about a minute per MB and finishing a cancelled write is quick. Everything written is read back and checked.</p>
+                        </div>
+                        <div class="tab-panel" data-tabs="gb" data-panel="ezjr" hidden>
+                            <p class="lead">Manage the files on the microSD card inside an <b>EZ Flash Jr</b> without taking it out: download ROMs and saves, upload new ones, or delete them. Insert the EZ Flash Jr <b>after</b> the GBA has switched to Game Boy Color mode; its SD card can't be reached otherwise.</p>
+                            <div class="flash-row">
+                                <button id="ezjrOpenBtn" class="btn" disabled><svg class="ic"><use href="#i-save"/></svg>Open EZ Flash Jr</button>
+                            </div>
+
+                            <div id="ezjrBrowser" class="sd-browser" hidden>
+                                <div class="sd-toolbar">
+                                    <nav id="ezjrCrumbs" class="sd-crumbs" aria-label="Folder"></nav>
+                                    <button id="ezjrRefreshBtn" class="btn btn-sm btn-ghost" disabled>Refresh</button>
+                                </div>
+                                <div id="ezjrDrop" class="sd-table-wrap">
+                                    <table class="sd-table">
+                                        <thead><tr><th>Name</th><th class="sd-size">Size</th><th class="sd-date">Modified</th><th></th></tr></thead>
+                                        <tbody id="ezjrRows"></tbody>
+                                    </table>
+                                    <p id="ezjrEmpty" class="sd-empty" hidden></p>
+                                    <div class="sd-drop-hint">Drop files to upload them to this folder</div>
+                                </div>
+                                <div class="sd-write-row">
+                                    <button id="ezjrUploadBtn" class="btn btn-sm" disabled><svg class="ic"><use href="#i-upload"/></svg>Upload Files</button>
+                                    <input type="file" id="ezjrUploadInput" multiple hidden>
+                                    <input type="text" id="ezjrFolderName" class="sd-input" placeholder="New folder name" maxlength="255" disabled>
+                                    <button id="ezjrMkdirBtn" class="btn btn-sm btn-ghost" disabled>Create Folder</button>
+                                </div>
+                            </div>
+
+                            <label class="check">
+                                <input type="checkbox" id="ezjrWrites">
+                                <span><b>Allow changes to the SD card.</b> Turns on uploading, renaming, deleting and new folders. Everything written is read back and checked. Try it with a spare card first.</span>
+                            </label>
+                            <details class="tip">
+                                <summary>More options</summary>
+                                <label class="check">
+                                    <input type="checkbox" id="ezjrShowHidden">
+                                    <span>Show hidden files, such as the ones macOS and Windows leave on the card (<code>._*</code>, <code>.DS_Store</code>, <code>System Volume Information</code>).</span>
+                                </label>
+                                <label class="check">
+                                    <input type="checkbox" id="ezjrVerify" checked>
+                                    <span>Read back and check everything written.</span>
+                                </label>
+                                <div class="field">
+                                    <label class="field-label" for="ezjrSectors">Sectors per SD command</label>
+                                    <select id="ezjrSectors" class="select">
+                                        <option value="4" selected>4 (fastest)</option>
+                                        <option value="2">2</option>
+                                        <option value="1">1 (if transfers fail)</option>
+                                    </select>
+                                </div>
+                            </details>
+                            <p class="fine">Transfers run at about 10–20 KB per second: a 1 MB ROM takes 1–2 minutes. The card must be FAT32 (or FAT16), which is what the EZ Flash Jr needs anyway.</p>
+                            <p class="fine">EZ Flash Jr support is built on the reverse engineering of the cart by <a href="https://github.com/lukesau/ezgb" target="_blank" rel="noopener">lukesau/ezgb</a>.</p>
                         </div>
                     </section>
                 </div>
@@ -387,6 +441,8 @@
     <script src="gb_cart.js"></script>
     <script src="gb_flashcart_profiles.js"></script>
     <script src="gb_flash.js"></script>
+    <script src="ezjr_sd.js"></script>
+    <script src="ezjr_ui.js"></script>
     <script src="app.js"></script>
     <script src="launcher-return.js"></script>
 </body>

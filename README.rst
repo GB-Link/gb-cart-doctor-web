@@ -199,6 +199,43 @@ Not supported:
 The cart's save is not touched. Carts with a batteryless save may lose it,
 so back it up first.
 
+EZ Flash Jr SD card
+-------------------
+
+The **EZ Flash Jr** tab manages the files on the microSD card inside an
+`EZ Flash Jr <https://www.ezflash.cn/>`_ without taking the card out.
+
+1. Send the multiboot as above, wait for the GBA to switch to GBC mode, then
+   insert the EZ Flash Jr. It must go in *after* the switch: its SD card can
+   only be reached in the mode the cart starts in when it powers up.
+2. Click **Read Cartridge**. The EZ Flash Jr shows its boot loader's header
+   (titled ``BOOTLOADER``), so the page checks for the cart and marks it as an
+   EZ Flash Jr, with its firmware version.
+3. On the **EZ Flash Jr** tab, click **Open EZ Flash Jr**. Click folders to open
+   them, and **Download** to put a file in the Files list.
+4. To upload files (pick them, or drop them on the list), rename or delete
+   files and empty folders, or create folders, tick **Allow changes to the SD
+   card**. **Rename** edits the name in place: Enter saves, Esc cancels.
+   Renaming a ``.gb`` or ``.gbc`` ROM also renames its save in ``/SAVER``,
+   because the EZ Flash Jr finds a game's save by the ROM's name.
+
+Transfers run at about 10–20 KB per second, so a 1 MB ROM takes 1–2 minutes.
+Everything written is read back and checked. An upload writes the file's
+data first and its folder entry last, so a cancelled or failed upload never
+leaves a broken file behind (at worst some unused space, which a disk check
+on a computer reclaims). The card must be FAT32 or FAT16. Try writing with a
+spare card first.
+
+How it works: the cart's FPGA does all the SD card work. The page sends the
+cart agent the register writes the EZ Flash Jr's own menu uses to read and
+write 512-byte sectors (``web/ezjr_sd.js``), and keeps track of the FAT
+filesystem itself. No other registers are ever written: one of them rewrites
+the FPGA's own flash and can brick the cart.
+
+The register map and SD sequences come from lukesau's
+`ezgb <https://github.com/lukesau/ezgb>`_, a reverse-engineering project for
+the EZ Flash Jr's kernel and FPGA. This feature wouldn't exist without it.
+
 Restoring and erasing saves
 ===========================
 
@@ -262,6 +299,12 @@ None of these need any hardware.
 
       node web/test/flashcart_test.mjs
 
+- EZ Flash Jr SD card test, which runs the SD code against a simulated EZ
+  Flash Jr and checks the FAT code against the operating system's own FAT
+  driver (the FAT part needs macOS)::
+
+      node web/test/ezjr_test.mjs
+
 - Game Boy test, which runs the real Game Boy programs on an emulated Game Boy
   CPU against simulated cartridges and flash carts. Needs a C compiler, RGBDS
   and a copy of the mGBA source code, either in a folder named ``mgba`` next
@@ -316,3 +359,7 @@ Flash cart writing uses:
 - vrodin's `Burn2Slot <https://github.com/vrodin/Burn2Slot>`_ (MIT): the
   flash chip search for carts no known type matches, by way of the Burn2Slot
   for GB-Link port.
+
+EZ Flash Jr SD card support uses the register map worked out by lukesau's
+`ezgb <https://github.com/lukesau/ezgb>`_ reverse-engineering project. No
+ezgb code is included.

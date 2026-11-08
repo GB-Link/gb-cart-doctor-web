@@ -829,3 +829,60 @@ body[data-system="gba"] .cart-art::after { bottom: 7px; height: 5px; }
 }
 .app-footer .sep { opacity: 0.6; }
 .activity[data-tone="warn"] .status .dot { background: var(--warn); }
+
+/* ------------------------------------------------------- EZ Flash Jr SD card */
+
+.sd-browser { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+.sd-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.sd-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-weight: 650; min-width: 0; }
+.sd-crumb {
+    font: inherit; color: var(--accent); background: none; border: 0; cursor: pointer;
+    padding: 2px 5px; border-radius: 6px;
+}
+.sd-crumb:hover { background: var(--accent-soft); }
+.sd-crumb-sep { color: var(--faint); }
+.sd-crumb-here { padding: 2px 5px; overflow-wrap: anywhere; }
+
+.sd-table-wrap {
+    position: relative; overflow-x: auto; max-height: 480px; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.sd-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.sd-table th {
+    position: sticky; top: 0; background: var(--surface-2); text-align: left; white-space: nowrap;
+    font-size: 0.74rem; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.sd-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.sd-table tr:last-child td { border-bottom: 0; }
+.sd-row:hover { background: var(--surface-3); }
+.sd-name {
+    display: flex; align-items: center; gap: 8px; font: inherit; color: var(--text);
+    background: none; border: 0; padding: 0; text-align: left; overflow-wrap: anywhere;
+}
+.sd-dir { cursor: pointer; font-weight: 650; }
+.sd-dir:hover:not(:disabled) { color: var(--accent); }
+.sd-icon { width: 20px; flex: none; text-align: center; }
+.sd-size, .sd-date { white-space: nowrap; color: var(--muted); }
+.sd-size { text-align: right; }
+.sd-actions { text-align: right; white-space: nowrap; width: 1%; }
+.sd-actions .btn + .btn { margin-left: 6px; }
+.sd-empty { padding: 28px 12px; text-align: center; color: var(--faint); font-size: 0.9rem; }
+.sd-drop-hint {
+    display: none; position: absolute; inset: 0; align-items: center; justify-content: center;
+    background: var(--accent-soft); border: 2px dashed var(--accent); border-radius: var(--radius-sm);
+    color: var(--accent); font-weight: 650;
+}
+.sd-table-wrap.dragging .sd-drop-hint { display: flex; }
+.sd-write-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sd-input {
+    font: inherit; font-size: 0.88rem; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 10px; min-width: 0; flex: 1 1 160px; max-width: 280px;
+}
+.sd-input:disabled { opacity: 0.55; }
+.sd-rename { width: 100%; min-width: 14em; max-width: none; }
+.tip .check { margin-top: 10px; }
+.tip .field { margin-top: 10px; max-width: 260px; }
+@media (max-width: 640px) {
+    .sd-date { display: none; }
+}
