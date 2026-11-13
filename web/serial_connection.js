@@ -53,7 +53,7 @@ class SerialConnection {
 
     async connect() {
         this.port = await navigator.serial.requestPort({
-            filters: [{ usbVendorId: 0x2FE3 }]
+            filters: [{ usbVendorId: 0x2FE3 }, { usbVendorId: 0x1209, usbProductId: 0xB011 }]
         });
         await this.port.open({ baudRate: 115200 });
         this.writer = this.port.writable.getWriter();

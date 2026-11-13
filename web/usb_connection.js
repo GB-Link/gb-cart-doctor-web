@@ -63,7 +63,8 @@ class UsbConnection {
         const filters = [
             { vendorId: 0xcafe },
             { vendorId: 0x239A },
-            { vendorId: 0x2FE3 }
+            { vendorId: 0x2FE3 },
+            { vendorId: 0x1209, productId: 0xB011 } // GBLink firmware 3.0.0 and newer
         ];
 
         this.device = await navigator.usb.requestDevice({ filters });
@@ -74,7 +75,8 @@ class UsbConnection {
         }
 
         await this.device.selectConfiguration(1);
-        this.isNewFirmware = (this.device.vendorId === 0x2FE3);
+        this.isNewFirmware = this.device.vendorId === 0x2FE3
+            || (this.device.vendorId === 0x1209 && this.device.productId === 0xB011);
 
         const interfaces = this.device.configuration.interfaces;
         let foundInterface = false;
